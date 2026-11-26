@@ -1,44 +1,55 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   AppSettings,
-  AppState,
-  AppView,
-  CrawlStats,
-  DemoId,
-  DiscoveredPage,
-  LogEntry,
+  AutomationFramework,
+  AutomationProject,
+  ProjectConfig,
+  ProjectFile,
+  TestCase,
+  TestRunItemResult,
+  TestRunLogEntry,
+  TestRunRecord,
+  TestingApproach,
+  UserProfile,
+  WorkspaceView,
 } from '@/types';
-import { Navigation } from '@/components/Navigation';
-import HeroSection from '@/sections/HeroSection';
-import CrawlConfiguration from '@/sections/CrawlConfiguration';
-import ProgressDashboard from '@/sections/ProgressDashboard';
-import ResultsTable from '@/sections/ResultsTable';
-import CodeGenerationCenter from '@/sections/CodeGenerationCenter';
-import DemoCenter from '@/sections/DemoCenter';
-import SettingsPanel from '@/sections/SettingsPanel';
-import Footer from '@/sections/Footer';
 import {
-  generateMockPages,
-  generateLogEntry,
-  getInitialStats,
-} from '@/lib/crawlSimulator';
-import { MEDIA_ASSETS } from '@/lib/mediaAssets';
+  analyzeWebsiteApi,
+  cancelTestRunApi,
+  createProjectApi,
+  deleteProjectApi,
+  duplicateProjectApi,
+  enhanceAiTestsApi,
+  listProjectsApi,
+  listTestRunsApi,
+  regenerateProjectApi,
+  saveProjectSecretsApi,
+  startTestRunApi,
+  updateProjectApi,
+} from '@/lib/api';
+import { AuthGate } from '@/components/AuthGate';
+import { TopNavAndSidebar } from '@/components/TopNavAndSidebar';
+import { AnalyzerView, type LiveAnalysisLog } from '@/views/AnalyzerView';
+import { TestCasesView } from '@/views/TestCasesView';
+import { StudioEditorView } from '@/views/StudioEditorView';
+import { RunnerView } from '@/views/RunnerView';
+import { ReportsView } from '@/views/ReportsView';
+import { ProjectsView } from '@/views/ProjectsView';
+import { SettingsView } from '@/views/SettingsView';
 
-const SETTINGS_STORAGE_KEY = 'webcrawler_pro_settings_v2';
+const SETTINGS_STORAGE_KEY = 'automator_ai_settings_v1';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'obsidian',
   accent: 'amber',
   density: 'comfortable',
   reducedMotion: false,
-  wallpaperEnabled: true,
-  defaultMaxPages: 100,
-  defaultFramework: 'playwright-ts',
+  defaultFramework: 'cypress-ts',
   sidebarCollapsed: false,
   fontScale: 100,
 };
 
-function loadInitialSettings(): AppSettings {
+function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
@@ -49,33 +60,24 @@ function loadInitialSettings(): AppSettings {
 }
 
 export default function App() {
-  const [settings, setSettings] = useState<AppSettings>(loadInitialSettings);
-  const [activeView, setActiveView] = useState<AppView>('overview');
-  const [selectedDemoId, setSelectedDemoId] = useState<DemoId | null>(null);
-  const [appState, setAppState] = useState<AppState>('landing');
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
 
-  // Crawl config
-  const [url, setUrl] = useState('https://example.com');
-  const [respectRobots, setRespectRobots] = useState(true);
-  const [followSubdomains, setFollowSubdomains] = useState(false);
-  const [maxPages, setMaxPages] = useState(() => loadInitialSettings().defaultMaxPages);
-  const [crawlDelayMs, setCrawlDelayMs] = useState(500);
-  const [maxDepth, setMaxDepth] = useState(3);
-  const [userAgent, setUserAgent] = useState('WebCrawlerPro/2.0');
+  const [activeView, setActiveView] = useState<WorkspaceView>('analyzer');
+  const [projects, setProjects] = useState<AutomationProject[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [runs, setRuns] = useState<TestRunRecord[]>([]);
+  const [activeRun, setActiveRun] = useState<TestRunRecord | null>(null);
 
-  // Crawl progress & results
-  const [stats, setStats] = useState<CrawlStats>(getInitialStats());
-  const [progress, setProgress] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [currentStatus, setCurrentStatus] = useState('Standby');
-  const [pages, setPages] = useState<DiscoveredPage[]>([]);
+  // Analysis live state
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [analysisLogs, setAnalysisLogs] = useState<LiveAnalysisLog[]>([]);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
 
-  const progressRef = useRef(0);
-  const crawlIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const logIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Sync theme, accent, reduced motion, and scale attributes to documentElement
+  // Sync theme, accent, reducedMotion, fontScale
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute('data-theme', settings.theme);
@@ -103,289 +105,397 @@ export default function App() {
     setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  const resetSettings = useCallback(() => {
-    setSettings(DEFAULT_SETTINGS);
+  const toggleDarkLight = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      theme: prev.theme === 'daylight' ? 'obsidian' : 'daylight',
+    }));
   }, []);
 
-  const clearAllIntervals = useCallback(() => {
-    if (crawlIntervalRef.current) clearInterval(crawlIntervalRef.current);
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    if (logIntervalRef.current) clearInterval(logIntervalRef.current);
-    crawlIntervalRef.current = null;
-    timerIntervalRef.current = null;
-    logIntervalRef.current = null;
+  const refreshWorkspaceData = useCallback(async (authToken: string) => {
+    const [projRes, runsRes] = await Promise.all([
+      listProjectsApi(authToken),
+      listTestRunsApi(authToken),
+    ]);
+    setProjects(projRes.projects);
+    setRuns(runsRes.runs);
+    setActiveProjectId((prev) => {
+      if (prev && projRes.projects.some((p) => p.id === prev)) return prev;
+      return projRes.projects[0]?.id || null;
+    });
   }, []);
 
-  const startCrawl = useCallback(() => {
-    clearAllIntervals();
-    const targetUrl = url.trim() || 'https://example.com';
-    const mockPages = generateMockPages(targetUrl, maxPages);
-
-    setPages(mockPages);
-    setStats(getInitialStats());
-    setProgress(0);
-    progressRef.current = 0;
-    setLogs([]);
-    setAppState('crawling');
-    setActiveView('crawler');
-    setCurrentStatus('Scanning target routes...');
-
-    let currentIndex = 0;
-    const totalPages = mockPages.length;
-    const crawlDuration = 8000;
-    const updateInterval = 200;
-    const stepsPerInterval = totalPages / (crawlDuration / updateInterval);
-
-    crawlIntervalRef.current = setInterval(() => {
-      currentIndex += stepsPerInterval;
-      const progressPercent = Math.min(100, (currentIndex / totalPages) * 100);
-      progressRef.current = progressPercent;
-
-      setProgress(progressPercent);
-      setStats((prev) => ({
-        ...prev,
-        pagesFound: totalPages,
-        pagesCrawled: Math.min(totalPages, Math.floor(currentIndex)),
-        testsGenerated: Math.floor((progressPercent / 100) * totalPages * 6),
-      }));
-
-      setPages((prev) =>
-        prev.map((page, i) => {
-          if (i < Math.floor(currentIndex) && page.status !== 'completed') {
-            return { ...page, status: 'completed' as const };
-          }
-          if (i === Math.floor(currentIndex) && page.status === 'pending') {
-            return { ...page, status: 'crawling' as const };
-          }
-          return page;
-        })
-      );
-
-      if (progressPercent < 30) {
-        setCurrentStatus('Discovering internal routes...');
-      } else if (progressPercent < 65) {
-        setCurrentStatus('Classifying DOM archetypes and locators...');
-      } else if (progressPercent < 95) {
-        setCurrentStatus('Synthesizing Page Objects and specs...');
-      } else {
-        setCurrentStatus('Finalizing test suites...');
-      }
-
-      if (progressPercent >= 100) {
-        clearAllIntervals();
-        setAppState('complete');
-        setCurrentStatus('Crawl complete');
-      }
-    }, updateInterval);
-
-    timerIntervalRef.current = setInterval(() => {
-      setStats((prev) => ({
-        ...prev,
-        timeElapsed: prev.timeElapsed + 1,
-      }));
-    }, 1000);
-
-    let logIndex = 0;
-    logIntervalRef.current = setInterval(() => {
-      const pct = progressRef.current;
-      const stage: 'discovering' | 'crawling' | 'generating' =
-        pct < 30 ? 'discovering' : pct < 70 ? 'crawling' : 'generating';
-      const entry = generateLogEntry(mockPages, logIndex % mockPages.length, stage);
-      setLogs((prev) => [...prev.slice(-99), entry]);
-      logIndex++;
-    }, 260);
-  }, [url, maxPages, clearAllIntervals]);
-
-  const stopCrawl = useCallback(() => {
-    clearAllIntervals();
-    setPages((prev) =>
-      prev.map((p) =>
-        p.status === 'pending' || p.status === 'crawling'
-          ? { ...p, status: 'completed' as const }
-          : p
-      )
-    );
-    setProgress(100);
-    progressRef.current = 100;
-    setAppState('complete');
-    setCurrentStatus('Crawl stopped and finalized');
-  }, [clearAllIntervals]);
-
-  const resetCrawl = useCallback(() => {
-    clearAllIntervals();
-    setAppState('landing');
-    setPages([]);
-    setLogs([]);
-    setStats(getInitialStats());
-    setProgress(0);
-    progressRef.current = 0;
-    setCurrentStatus('Standby');
-  }, [clearAllIntervals]);
-
-  const handleOpenDemo = useCallback((demoId: DemoId) => {
-    setSelectedDemoId(demoId);
-    setActiveView('demos');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
-
-  const handleNavigate = useCallback((view: AppView) => {
-    setActiveView(view);
-    if (view !== 'demos') {
-      setSelectedDemoId(null);
-    }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
-
+  // Real-time WebSocket subscription for analysis & test execution
   useEffect(() => {
-    return () => clearAllIntervals();
-  }, [clearAllIntervals]);
+    if (!token) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
 
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'auth', token }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as Record<string, unknown>;
+        if (data.type === 'analysis:progress') {
+          if (activeJobIdRef.current && data.jobId !== activeJobIdRef.current) return;
+          setAnalysisProgress(Number(data.progress || 0));
+          setAnalysisLogs((prev) => [
+            ...prev.slice(-49),
+            {
+              stage: String(data.stage || ''),
+              progress: Number(data.progress || 0),
+              message: String(data.message || ''),
+              level: (data.level as LiveAnalysisLog['level']) || 'info',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        } else if (data.type === 'run:started') {
+          const run = data.payload as TestRunRecord;
+          setActiveRun(run);
+          setRuns((prev) => [run, ...prev.filter((r) => r.id !== run.id)]);
+        } else if (data.type === 'run:log') {
+          const entry = data.payload as TestRunLogEntry;
+          const runId = String(data.runId);
+          setActiveRun((prev) =>
+            prev && prev.id === runId ? { ...prev, logs: [...prev.logs, entry] } : prev
+          );
+        } else if (data.type === 'run:test_complete') {
+          const runId = String(data.runId);
+          const payload = data.payload as {
+            result: TestRunItemResult;
+            runSummary: {
+              passed: number;
+              failed: number;
+              skipped: number;
+              totalTests: number;
+              durationMs: number;
+            };
+          };
+          setActiveRun((prev) =>
+            prev && prev.id === runId
+              ? {
+                  ...prev,
+                  ...payload.runSummary,
+                  results: [...prev.results, payload.result],
+                }
+              : prev
+          );
+        } else if (data.type === 'run:finished') {
+          const finished = data.payload as TestRunRecord;
+          setActiveRun(finished);
+          setRuns((prev) => [finished, ...prev.filter((r) => r.id !== finished.id)]);
+          refreshWorkspaceData(token).catch(() => {});
+        }
+      } catch {
+        // Ignore malformed WS frames
+      }
+    };
+
+    return () => ws.close();
+  }, [token, refreshWorkspaceData]);
+
+  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+
+  const upsertProjectInState = (proj: AutomationProject) => {
+    setProjects((prev) => [proj, ...prev.filter((p) => p.id !== proj.id)]);
+    setActiveProjectId(proj.id);
+  };
+
+  const handleRunAnalysis = async (params: {
+    url: string;
+    framework: AutomationFramework;
+    approach: TestingApproach;
+    maxPages: number;
+    maxDepth: number;
+    respectRobots: boolean;
+    followSubdomains: boolean;
+  }) => {
+    if (!token) return;
+    const jobId = crypto.randomUUID();
+    activeJobIdRef.current = jobId;
+    setAnalyzing(true);
+    setAnalysisProgress(2);
+    setAnalysisLogs([]);
+    setAnalysisError(null);
+
+    try {
+      const { analysis, testCases } = await analyzeWebsiteApi(token, {
+        ...params,
+        jobId,
+      });
+
+      const hostName = (() => {
+        try {
+          return new URL(analysis.url).hostname.replace(/^www\./, '');
+        } catch {
+          return 'Website';
+        }
+      })();
+
+      const created = await createProjectApi(token, {
+        name: `${hostName} Automation`,
+        url: analysis.url,
+        framework: params.framework,
+        approach: params.approach,
+        analysis,
+        testCases,
+      });
+
+      upsertProjectInState(created.project);
+      setAnalysisProgress(100);
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Website analysis failed.');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleUpdateTestCases = async (testCases: TestCase[]) => {
+    if (!token || !activeProject) return;
+    const res = await updateProjectApi(token, activeProject.id, { testCases });
+    upsertProjectInState(res.project);
+  };
+
+  const handleSaveFiles = async (files: ProjectFile[]) => {
+    if (!token || !activeProject) return;
+    const res = await updateProjectApi(token, activeProject.id, { files });
+    upsertProjectInState(res.project);
+  };
+
+  const handleRegenerate = async (
+    framework: AutomationFramework,
+    approach: TestingApproach
+  ) => {
+    if (!token || !activeProject) return;
+    const res = await regenerateProjectApi(token, activeProject.id, framework, approach);
+    upsertProjectInState(res.project);
+  };
+
+  const handleSaveConfig = async (config: ProjectConfig) => {
+    if (!token || !activeProject) return;
+    const res = await updateProjectApi(token, activeProject.id, { config });
+    upsertProjectInState(res.project);
+  };
+
+  const handleStartRun = async (testCaseIds?: string[]) => {
+    if (!token || !activeProject) return;
+    const res = await startTestRunApi(token, activeProject.id, testCaseIds);
+    setActiveRun(res.run);
+    setActiveView('runner');
+  };
+
+  const handleCancelRun = async (runId: string) => {
+    if (!token) return;
+    await cancelTestRunApi(token, runId);
+  };
+
+  const handleEnhanceWithAi = async (focus?: string) => {
+    if (!token || !activeProject) return;
+    const res = await enhanceAiTestsApi(token, activeProject.id, focus);
+    upsertProjectInState(res.project);
+  };
+
+  const handleSignOut = () => {
+    setUser(null);
+    setToken(null);
+    setProjects([]);
+    setRuns([]);
+    setActiveProjectId(null);
+    setActiveRun(null);
+  };
+
+  if (!user || !token) {
+    return (
+      <AuthGate
+        theme={settings.theme}
+        onToggleTheme={toggleDarkLight}
+        onAuthenticated={(u, t) => {
+          setUser(u);
+          setToken(t);
+          refreshWorkspaceData(t).catch(() => {});
+        }}
+      />
+    );
+  }
+
+  const isRunning = activeRun?.status === 'running' || activeRun?.status === 'queued';
   const densityPadding =
     settings.density === 'compact'
-      ? 'py-4'
+      ? 'py-2'
       : settings.density === 'spacious'
-        ? 'py-10'
-        : 'py-6';
+        ? 'py-8'
+        : 'py-4';
+
+  const viewTitles: Record<WorkspaceView, string> = {
+    analyzer: 'AI Website Analyzer',
+    tests: 'Test Cases & Coverage',
+    studio: 'Script Studio & IDE',
+    runner: 'Live Test Runner',
+    reports: 'Reports & Analytics',
+    projects: 'Projects & Credentials Vault',
+    settings: 'Platform Settings',
+  };
 
   return (
-    <div className="min-h-screen relative bg-[var(--surface-canvas)] text-[var(--text-main)]">
-      {/* Subtle Ambient Architectural Wallpaper */}
-      {settings.wallpaperEnabled && (
-        <div
-          aria-hidden="true"
-          className="fixed inset-0 pointer-events-none z-0 overflow-hidden"
-        >
-          <img
-            src={MEDIA_ASSETS.demoAurora}
-            alt=""
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover opacity-[0.07]"
-          />
-        </div>
-      )}
-
-      <Navigation
-        appState={appState}
+    <div className="min-h-screen bg-[var(--surface-canvas)] text-[var(--text-main)] flex flex-col">
+      <TopNavAndSidebar
         activeView={activeView}
-        onNavigate={handleNavigate}
-        onStartQuickCrawl={startCrawl}
+        onNavigate={(v) => {
+          setActiveView(v);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
         sidebarCollapsed={settings.sidebarCollapsed}
         onToggleSidebar={() =>
           updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })
         }
-        discoveredCount={pages.length}
-        progress={progress}
+        theme={settings.theme}
+        onToggleTheme={toggleDarkLight}
+        user={user}
+        onSignOut={handleSignOut}
+        activeProjectName={activeProject?.name}
+        testCount={activeProject?.testCases.length || 0}
+        isRunning={isRunning}
       />
 
-      {/* Main Workspace Viewport */}
       <div
-        className={`relative z-10 pt-16 transition-all duration-200 ${
+        className={`flex-1 flex flex-col min-w-0 pt-14 lg:pt-16 transition-all duration-200 ${
           settings.sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[240px]'
         }`}
       >
         {/* Contextual Breadcrumb Sub-bar */}
-        <div className="border-b bg-[var(--surface-panel)]/70 backdrop-blur-md">
-          <div className="max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 h-11 flex items-center justify-between text-xs text-[var(--text-secondary)]">
+        <div className="border-b bg-[var(--surface-panel)]/75">
+          <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)]">
             <div className="flex items-center gap-2 min-w-0">
-              <span>WebCrawler Pro</span>
+              <span className="shrink-0">Automator AI</span>
               <span aria-hidden="true">/</span>
-              <span className="text-[var(--text-main)] font-medium truncate">
-                {activeView === 'overview' && 'Overview'}
-                {activeView === 'crawler' && 'Crawler Studio'}
-                {activeView === 'results' && 'Results & Code Generation'}
-                {activeView === 'demos' &&
-                  (selectedDemoId
-                    ? 'Interactive Product Demos / Live Preview'
-                    : 'Interactive Product Demos')}
-                {activeView === 'settings' && 'Settings'}
+              <span className="font-medium text-[var(--text-main)] truncate">
+                {viewTitles[activeView]}
               </span>
             </div>
-
-            <div className="hidden sm:flex items-center gap-3 text-[var(--text-muted)]">
-              <span className="font-mono truncate max-w-[240px]">{url}</span>
-            </div>
+            {activeProject && (
+              <div className="hidden sm:flex items-center gap-3 font-mono text-[11px] text-[var(--text-muted)] min-w-0">
+                <span className="truncate max-w-[260px]">{activeProject.url}</span>
+                <span aria-hidden="true">·</span>
+                <span className="shrink-0">{activeProject.framework}</span>
+              </div>
+            )}
           </div>
         </div>
 
-        <main className={densityPadding}>
-          {activeView === 'overview' && (
-            <HeroSection
-              url={url}
-              onUrlChange={setUrl}
-              onStartCrawl={startCrawl}
-              onNavigate={handleNavigate}
-              onOpenDemo={handleOpenDemo}
+        <main className={`flex-1 min-w-0 ${densityPadding}`}>
+          {activeView === 'analyzer' && (
+            <AnalyzerView
+              project={activeProject}
+              analyzing={analyzing}
+              progress={analysisProgress}
+              liveLogs={analysisLogs}
+              error={analysisError}
+              defaultFramework={settings.defaultFramework}
+              onRunAnalysis={handleRunAnalysis}
+              onNavigate={setActiveView}
             />
           )}
 
-          {activeView === 'crawler' && (
-            <div className="max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
-              <CrawlConfiguration
-                url={url}
-                onUrlChange={setUrl}
-                respectRobots={respectRobots}
-                onRespectRobotsChange={setRespectRobots}
-                followSubdomains={followSubdomains}
-                onFollowSubdomainsChange={setFollowSubdomains}
-                maxPages={maxPages}
-                onMaxPagesChange={setMaxPages}
-                crawlDelayMs={crawlDelayMs}
-                onCrawlDelayMsChange={setCrawlDelayMs}
-                maxDepth={maxDepth}
-                onMaxDepthChange={setMaxDepth}
-                userAgent={userAgent}
-                onUserAgentChange={setUserAgent}
-                onStartCrawl={startCrawl}
-                onResetCrawl={resetCrawl}
-                hasResults={pages.length > 0}
-                disabled={appState === 'crawling'}
-              />
-
-              {(appState === 'crawling' || pages.length > 0) && (
-                <ProgressDashboard
-                  stats={stats}
-                  progress={progress}
-                  logs={logs}
-                  pages={pages}
-                  currentStatus={currentStatus}
-                  isComplete={appState === 'complete'}
-                  onStopCrawl={stopCrawl}
-                  onViewResults={() => handleNavigate('results')}
-                />
-              )}
-            </div>
+          {activeView === 'tests' && (
+            <TestCasesView
+              project={activeProject}
+              onUpdateTestCases={handleUpdateTestCases}
+              onRunTests={handleStartRun}
+              onEnhanceWithAi={handleEnhanceWithAi}
+              onNavigate={setActiveView}
+            />
           )}
 
-          {activeView === 'results' && (
-            <div className="max-w-[1240px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
-              <ResultsTable
-                pages={pages}
-                defaultFramework={settings.defaultFramework}
-                onStartSampleCrawl={startCrawl}
-              />
-              {pages.length > 0 && <CodeGenerationCenter pages={pages} />}
-            </div>
+          {activeView === 'studio' && (
+            <StudioEditorView
+              key={`${activeProject?.id || 'none'}:${activeProject?.updatedAt || ''}`}
+              token={token}
+              project={activeProject}
+              onSaveFiles={handleSaveFiles}
+              onRegenerate={handleRegenerate}
+              onRunSuite={() => handleStartRun()}
+              onNavigate={setActiveView}
+            />
           )}
 
-          {activeView === 'demos' && (
-            <DemoCenter
-              selectedDemoId={selectedDemoId}
-              onSelectDemo={setSelectedDemoId}
-              appSettings={settings}
-              onUpdateAppSettings={updateSettings}
+          {activeView === 'runner' && (
+            <RunnerView
+              token={token}
+              project={activeProject}
+              activeRun={activeRun}
+              runs={runs}
+              onSaveConfig={handleSaveConfig}
+              onStartRun={handleStartRun}
+              onCancelRun={handleCancelRun}
+              onNavigate={setActiveView}
+            />
+          )}
+
+          {activeView === 'reports' && (
+            <ReportsView
+              token={token}
+              projects={projects}
+              runs={runs}
+              onNavigate={setActiveView}
+            />
+          )}
+
+          {activeView === 'projects' && (
+            <ProjectsView
+              projects={projects}
+              activeProjectId={activeProjectId}
+              onSelectProject={(p) => setActiveProjectId(p.id)}
+              onCreateProject={async (params) => {
+                const res = await createProjectApi(token, {
+                  ...params,
+                  approach: 'pom',
+                });
+                upsertProjectInState(res.project);
+              }}
+              onRenameProject={async (id, name, description) => {
+                const res = await updateProjectApi(token, id, { name, description });
+                upsertProjectInState(res.project);
+              }}
+              onDuplicateProject={async (id) => {
+                const res = await duplicateProjectApi(token, id);
+                upsertProjectInState(res.project);
+              }}
+              onDeleteProject={async (id) => {
+                await deleteProjectApi(token, id);
+                setProjects((prev) => {
+                  const next = prev.filter((p) => p.id !== id);
+                  if (activeProjectId === id) {
+                    setActiveProjectId(next[0]?.id || null);
+                  }
+                  return next;
+                });
+              }}
+              onSaveSecrets={async (id, secrets) => {
+                const res = await saveProjectSecretsApi(token, id, secrets);
+                upsertProjectInState(res.project);
+              }}
+              onNavigate={setActiveView}
             />
           )}
 
           {activeView === 'settings' && (
-            <SettingsPanel
+            <SettingsView
               settings={settings}
+              user={user}
               onUpdateSettings={updateSettings}
-              onResetSettings={resetSettings}
+              onResetSettings={() => setSettings(DEFAULT_SETTINGS)}
             />
           )}
         </main>
 
-        <Footer onNavigate={handleNavigate} />
+        <footer className="border-t py-4 px-4 sm:px-6 lg:px-8 text-xs text-[var(--text-muted)]">
+          <div className="max-w-[1440px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
+            <span>Automator AI — Website Automation Engineering Platform</span>
+            <span>Selenium &amp; Cypress · Java · JavaScript · TypeScript · Python</span>
+          </div>
+        </footer>
       </div>
     </div>
   );

@@ -1,0 +1,8 @@
+{
+  "name": "Automator AI — Selenium & Cypress Script Studio",
+  "description": "AI-powered website analyzer, automatic test case generator, VS Code-grade script editor, and isolated live Selenium & Cypress automation runner across Java, JavaScript, TypeScript, and Python.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
