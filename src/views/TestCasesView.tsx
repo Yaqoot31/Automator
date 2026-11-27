@@ -40,6 +40,8 @@ import {
   shareSpreadsheetPermission,
   syncTestCasesToSpreadsheet,
 } from '@/lib/googleSheets';
+import { formatFirebaseAuthError, isUnauthorizedDomainError } from '@/lib/firebase';
+import { UnauthorizedDomainNotice } from '@/components/UnauthorizedDomainNotice';
 
 interface TestCasesViewProps {
   project: AutomationProject | null;
@@ -99,6 +101,7 @@ export function TestCasesView({
   const [googleBusy, setGoogleBusy] = useState(false);
   const [googleMessage, setGoogleMessage] = useState<string | null>(null);
   const [googleError, setGoogleError] = useState<string | null>(null);
+  const [googleUnauthorizedDomain, setGoogleUnauthorizedDomain] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<GoogleConfirmAction | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareEmail, setShareEmail] = useState('');
@@ -303,13 +306,18 @@ export function TestCasesView({
   // Google Workspace Handlers (Explicit confirmation modal enforced before mutating Google Sheets / Drive)
   const handleConnectGoogle = async () => {
     setGoogleError(null);
+    setGoogleUnauthorizedDomain(false);
     setGoogleBusy(true);
     try {
       await connectGoogleWorkspace();
       setGoogleStatus(getGoogleWorkspaceStatus());
       setGoogleMessage('Connected to Google Workspace. You can now create or sync test sheets.');
     } catch (err) {
-      setGoogleError(err instanceof Error ? err.message : 'Google Workspace sign-in failed.');
+      if (isUnauthorizedDomainError(err)) {
+        setGoogleUnauthorizedDomain(true);
+      } else {
+        setGoogleError(formatFirebaseAuthError(err));
+      }
     } finally {
       setGoogleBusy(false);
     }
@@ -554,6 +562,9 @@ export function TestCasesView({
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>{googleMessage}</span>
           </div>
+        )}
+        {googleUnauthorizedDomain && (
+          <UnauthorizedDomainNotice contextLabel="Google Sheets Sync" />
         )}
         {googleError && (
           <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs text-red-500">

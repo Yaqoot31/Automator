@@ -30,11 +30,14 @@ import {
 } from '@/lib/api';
 import {
   FIREBASE_META,
+  formatFirebaseAuthError,
   getFirebaseConnectionState,
+  isUnauthorizedDomainError,
   subscribeFirebaseConnection,
   testConnection,
   type FirebaseConnectionState,
 } from '@/lib/firebase';
+import { UnauthorizedDomainNotice } from '@/components/UnauthorizedDomainNotice';
 import {
   fetchFirestoreCollectionSummary,
   type FirestoreCollectionSummary,
@@ -111,6 +114,7 @@ export function SettingsView({
   );
   const [cloudNotice, setCloudNotice] = useState<string | null>(null);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  const [cloudUnauthorizedDomain, setCloudUnauthorizedDomain] = useState(false);
 
   useEffect(() => {
     return subscribeFirebaseConnection(setFbConn);
@@ -223,12 +227,17 @@ export function SettingsView({
     if (!onConnectFirebaseGoogle) return;
     setCloudBusy('connect');
     setCloudError(null);
+    setCloudUnauthorizedDomain(false);
     setCloudNotice(null);
     try {
       await onConnectFirebaseGoogle();
       setCloudNotice('Google / Firebase account linked to workspace.');
     } catch (err) {
-      setCloudError(err instanceof Error ? err.message : 'Could not link Google / Firebase.');
+      if (isUnauthorizedDomainError(err)) {
+        setCloudUnauthorizedDomain(true);
+      } else {
+        setCloudError(formatFirebaseAuthError(err));
+      }
     } finally {
       setCloudBusy(null);
     }
@@ -590,6 +599,10 @@ export function SettingsView({
             )}
           </div>
         </div>
+
+        {cloudUnauthorizedDomain && (
+          <UnauthorizedDomainNotice contextLabel="Firebase Google Auth" />
+        )}
 
         {cloudError && (
           <div

@@ -15,7 +15,33 @@ export const FIREBASE_META = {
   projectId: firebaseConfig.projectId,
   databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
   authDomain: firebaseConfig.authDomain,
+  authorizedDomainsUrl: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`,
 };
+
+export function isUnauthorizedDomainError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code || '';
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain');
+}
+
+export function formatFirebaseAuthError(err: unknown): string {
+  const code = (err as { code?: string } | null)?.code || '';
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+
+  if (isUnauthorizedDomainError(err)) {
+    return `Domain "${hostname}" is not authorized in Firebase Authentication. Add "${hostname}" to Authorized domains in Firebase Console for project "${FIREBASE_META.projectId}".`;
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Google sign-in popup was closed before completion.';
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Google sign-in popup was blocked by your browser. Please allow popups for this site and try again.';
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return 'Google Sign-In provider is not enabled in Firebase Authentication.';
+  }
+  return err instanceof Error ? err.message : 'Google authentication failed.';
+}
 
 export const OperationType = {
   CREATE: 'create',

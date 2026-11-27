@@ -29,9 +29,15 @@ import {
   resetPasswordApi,
   verifyEmailApi,
 } from '@/lib/api';
-import { auth, googleAuthProvider } from '@/lib/firebase';
+import {
+  auth,
+  formatFirebaseAuthError,
+  googleAuthProvider,
+  isUnauthorizedDomainError,
+} from '@/lib/firebase';
 import { MEDIA_ASSETS } from '@/lib/mediaAssets';
 import { BrandMark } from '@/components/BrandMark';
+import { UnauthorizedDomainNotice } from '@/components/UnauthorizedDomainNotice';
 import type { ThemeMode, UserProfile, UserRole } from '@/types';
 
 interface AuthGateProps {
@@ -176,6 +182,7 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -203,12 +210,14 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
   const switchMode = (next: AuthMode) => {
     setMode(next);
     setError(null);
+    setUnauthorizedDomain(false);
     setNotice(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setUnauthorizedDomain(false);
     setNotice(null);
 
     if (mode === 'register') {
@@ -319,6 +328,7 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
 
   const handleGoogleSignIn = async () => {
     setError(null);
+    setUnauthorizedDomain(false);
     setNotice(null);
     setGoogleLoading(true);
     try {
@@ -327,11 +337,10 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
       const res = await firebaseGoogleLoginApi(idToken);
       onAuthenticated(res.user, res.token);
     } catch (err) {
-      const code = (err as { code?: string })?.code;
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setError('Google sign-in popup was closed before completion.');
+      if (isUnauthorizedDomainError(err)) {
+        setUnauthorizedDomain(true);
       } else {
-        setError(err instanceof Error ? err.message : 'Google authentication failed.');
+        setError(formatFirebaseAuthError(err));
       }
     } finally {
       setGoogleLoading(false);
@@ -597,6 +606,8 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
                           : 'Enter your reset code and choose a new password (8+ characters).'}
                 </p>
               </div>
+
+              {unauthorizedDomain && <UnauthorizedDomainNotice contextLabel="Continue with Google" />}
 
               {error && (
                 <div
