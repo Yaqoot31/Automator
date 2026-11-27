@@ -29,7 +29,9 @@ service cloud.firestore {
     }
 
     function isBootstrappedAdmin() {
-      return isVerified() && request.auth.token.email == 'rajpoot311210@gmail.com';
+      return isVerified() &&
+        (request.auth.token.email == 'rajpoot311210@gmail.com' ||
+          request.auth.token.email == 'ranayaqoot@gmail.com');
     }
 
     function isAdmin() {
@@ -351,7 +353,7 @@ service cloud.firestore {
 
     // ---------- Automation Projects & Master-Gated Subcollections ----------
     match /projects/{projectId} {
-      allow get: if isVerified() && isValidId(projectId) && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow get: if isVerified() && isValidId(projectId) && (resource == null || existing().ownerUid == request.auth.uid || isAdmin());
       allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
       allow create: if isVerified() && isValidId(projectId) &&
         isValidProject(incoming()) &&

@@ -176,7 +176,7 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
-  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(true);
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -627,6 +627,52 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
                 </div>
               )}
 
+              {/* 1-Click Any-Gmail Google Sign-In (No Workspace Permissions Required) */}
+              {(mode === 'register' || mode === 'login') && (
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={loading || googleLoading}
+                    className="w-full min-h-[48px] px-4 rounded-xl surface-elevated hover:bg-[var(--surface-hover)] border text-sm font-semibold text-[var(--text-main)] inline-flex items-center justify-center gap-2.5 transition-colors disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        fill="#EA4335"
+                        d="M12 10.2v3.9h5.4c-.2 1.3-1.5 3.8-5.4 3.8-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.7 3.3 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.5 0 9.2-3.9 9.2-9.4 0-.6-.1-1.1-.2-1.6H12z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M3.5 7.4l3.2 2.3C7.6 7.9 9.6 6.6 12 6.6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.7 3.3 14.6 2.4 12 2.4 8.3 2.4 5.1 4.5 3.5 7.4z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M12 21.6c2.5 0 4.6-.8 6.2-2.3l-2.9-2.4c-.8.6-1.9 1-3.3 1-2.5 0-4.7-1.7-5.5-4l-3.2 2.5C5 19.4 8.2 21.6 12 21.6z"
+                      />
+                      <path
+                        fill="#4285F4"
+                        d="M21.2 12.2c0-.7-.1-1.3-.2-2H12v3.9h5.4c-.3 1.3-1 2.4-2.1 3.1l2.9 2.4c1.7-1.6 3-4 3-7.4z"
+                      />
+                    </svg>
+                    <span>
+                      {googleLoading
+                        ? 'Connecting Google Account...'
+                        : 'Continue with Any Gmail (Google)'}
+                    </span>
+                  </button>
+                  <p className="text-[11px] text-center text-[var(--text-muted)]">
+                    Open access for any @gmail.com — no admin approval or Google Workspace permissions required.
+                  </p>
+                  <div className="relative flex items-center py-1">
+                    <div className="flex-grow border-t border-[var(--border-subtle)]" />
+                    <span className="shrink mx-3 text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+                      or use email &amp; password
+                    </span>
+                    <div className="flex-grow border-t border-[var(--border-subtle)]" />
+                  </div>
+                </div>
+              )}
+
               {/* Register or Login Form */}
               {(mode === 'register' || mode === 'login') && (
                 <form onSubmit={handleSubmit} className="space-y-3.5">
@@ -807,43 +853,6 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
                           : 'Sign In to Workspace'}
                     </span>
                     <ArrowRight className="w-4 h-4" aria-hidden="true" />
-                  </button>
-
-                  <div className="relative flex items-center py-1">
-                    <div className="flex-grow border-t border-[var(--border-subtle)]" />
-                    <span className="shrink mx-3 text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
-                      or continue with
-                    </span>
-                    <div className="flex-grow border-t border-[var(--border-subtle)]" />
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignIn}
-                    disabled={loading || googleLoading}
-                    className="w-full min-h-[46px] px-4 rounded-xl surface-elevated hover:bg-[var(--surface-hover)] border text-sm font-medium text-[var(--text-main)] inline-flex items-center justify-center gap-2.5 transition-colors disabled:opacity-50"
-                  >
-                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        fill="#EA4335"
-                        d="M12 10.2v3.9h5.4c-.2 1.3-1.5 3.8-5.4 3.8-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.7 3.3 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.5 0 9.2-3.9 9.2-9.4 0-.6-.1-1.1-.2-1.6H12z"
-                      />
-                      <path
-                        fill="#34A853"
-                        d="M3.5 7.4l3.2 2.3C7.6 7.9 9.6 6.6 12 6.6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.7 3.3 14.6 2.4 12 2.4 8.3 2.4 5.1 4.5 3.5 7.4z"
-                      />
-                      <path
-                        fill="#FBBC05"
-                        d="M12 21.6c2.5 0 4.6-.8 6.2-2.3l-2.9-2.4c-.8.6-1.9 1-3.3 1-2.5 0-4.7-1.7-5.5-4l-3.2 2.5C5 19.4 8.2 21.6 12 21.6z"
-                      />
-                      <path
-                        fill="#4285F4"
-                        d="M21.2 12.2c0-.7-.1-1.3-.2-2H12v3.9h5.4c-.3 1.3-1 2.4-2.1 3.1l2.9 2.4c1.7-1.6 3-4 3-7.4z"
-                      />
-                    </svg>
-                    <span>
-                      {googleLoading ? 'Connecting Google & Firebase...' : 'Continue with Google'}
-                    </span>
                   </button>
                 </form>
               )}

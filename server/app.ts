@@ -311,16 +311,19 @@ export async function createExpressApp(options?: {
           'qa_lead',
           'project_manager',
           'developer',
+          'viewer',
         ];
+        const isBootstrappedAdminEmail =
+          email === 'rajpoot311210@gmail.com' || email === 'ranayaqoot@gmail.com';
         const role: UserRole =
-          total === 0
+          total === 0 || isBootstrappedAdminEmail
             ? 'admin'
             : allowedPublicRoles.includes(requestedRole)
               ? requestedRole
               : 'sqa_engineer';
 
         const { hash, salt } = hashPassword(password);
-        const user = await createUser({
+        const created = await createUser({
           id: crypto.randomUUID(),
           email,
           name,
@@ -328,15 +331,8 @@ export async function createExpressApp(options?: {
           passwordHash: hash,
           passwordSalt: salt,
         });
-
-        const verificationCode = generateOneTimeCode();
-        await createAuthOneTimeToken({
-          id: crypto.randomUUID(),
-          userId: user.id,
-          purpose: 'email_verify',
-          tokenHash: hashToken(verificationCode),
-          expiresAt: Date.now() + 1000 * 60 * 60 * 24,
-        });
+        const verifiedUser = await markUserEmailVerified(created.id);
+        const user: UserProfile = verifiedUser || { ...created, emailVerified: true };
 
         const token = signAuthToken(
           {
@@ -344,17 +340,16 @@ export async function createExpressApp(options?: {
             email: user.email,
             name: user.name,
             role: user.role,
-            emailVerified: user.emailVerified,
+            emailVerified: true,
           },
-          false
+          true
         );
-        setSessionCookie(res, token, false);
+        setSessionCookie(res, token, true);
 
         res.status(201).json({
           user,
           token,
-          verificationRequired: true,
-          verificationPreviewCode: verificationCode,
+          verificationRequired: false,
         });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : 'Registration failed.' });
@@ -434,18 +429,21 @@ export async function createExpressApp(options?: {
         }
         const decoded = await verifyFirebaseIdToken(idToken);
         const email = sanitizeText(decoded.email, 160).toLowerCase();
-        if (!email || decoded.email_verified !== true) {
-          res.status(401).json({ error: 'A verified Google email address is required.' });
+        if (!email) {
+          res.status(401).json({ error: 'A valid Google email address is required.' });
           return;
         }
 
+        const isEmailVerified = decoded.email_verified !== false;
         const record = await findUserByEmail(email);
         let user: UserProfile;
 
         if (!record) {
           const existingTotal = await countUsers();
+          const isBootstrappedAdminEmail =
+            email === 'rajpoot311210@gmail.com' || email === 'ranayaqoot@gmail.com';
           const role: UserRole =
-            existingTotal === 0 || email === 'rajpoot311210@gmail.com' ? 'admin' : 'sqa_engineer';
+            existingTotal === 0 || isBootstrappedAdminEmail ? 'admin' : 'sqa_engineer';
           const { hash, salt } = hashPassword(crypto.randomBytes(32).toString('hex'));
           const created = await createUser({
             id: crypto.randomUUID(),
@@ -455,10 +453,12 @@ export async function createExpressApp(options?: {
             passwordHash: hash,
             passwordSalt: salt,
           });
-          await markUserEmailVerified(created.id);
-          user = { ...created, emailVerified: true };
+          if (isEmailVerified) {
+            await markUserEmailVerified(created.id);
+          }
+          user = { ...created, emailVerified: isEmailVerified };
         } else {
-          if (!record.emailVerified) {
+          if (isEmailVerified && !record.emailVerified) {
             await markUserEmailVerified(record.id);
           }
           user = {
@@ -466,7 +466,7 @@ export async function createExpressApp(options?: {
             email: record.email,
             name: record.name,
             role: record.role,
-            emailVerified: true,
+            emailVerified: record.emailVerified || isEmailVerified,
             jobTitle: record.jobTitle,
             organization: record.organization,
             createdAt: record.createdAt,
@@ -479,7 +479,7 @@ export async function createExpressApp(options?: {
             email: user.email,
             name: user.name,
             role: user.role,
-            emailVerified: true,
+            emailVerified: user.emailVerified,
           },
           true
         );
