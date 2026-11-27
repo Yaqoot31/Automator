@@ -203,6 +203,283 @@ async function checkBrokenLinksSample(links: string[], origin: string): Promise<
   return broken;
 }
 
+async function analyzePageWithHttp(params: {
+  targetUrl: URL;
+  rootHost: string;
+  followSubdomains: boolean;
+  depth: number;
+  maxDepth: number;
+  maxPages: number;
+  timeoutMs: number;
+  visited: Set<string>;
+  queue: { url: string; depth: number }[];
+  discoveredUrls: Set<string>;
+  recordSkip: (url: string, reason: string) => void;
+  checkBrokenLinks: boolean;
+}): Promise<{ page: AnalyzedPage; antiBot?: string; unsupported: UnsupportedElementInfo[] }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(params.timeoutMs, 10000));
+  const navStart = Date.now();
+  const res = await fetch(params.targetUrl.toString(), {
+    signal: controller.signal,
+    headers: { 'User-Agent': 'AutomatorQA/2.0' },
+  });
+  clearTimeout(timer);
+  const loadTimeMs = Date.now() - navStart;
+  const finalUrl = res.url || params.targetUrl.toString();
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const title = $('title').text().trim() || params.targetUrl.hostname;
+  const parsedFinal = new URL(finalUrl);
+  const pagePath = parsedFinal.pathname || '/';
+
+  const buildLocator = (el: Parameters<typeof $>[0]): { locator: string; strategy: DomElementInfo['locatorStrategy'] } => {
+    const $el = $(el);
+    const tag =
+      (el && typeof el === 'object' && 'tagName' in el && typeof el.tagName === 'string'
+        ? el.tagName
+        : $el.prop('tagName')?.toString().toLowerCase()) || 'div';
+    const testId = $el.attr('data-testid') || $el.attr('data-test');
+    if (testId) return { locator: `[data-testid="${testId}"]`, strategy: 'data-testid' };
+    const id = $el.attr('id');
+    if (id && /^[a-zA-Z][\w-]*$/.test(id)) return { locator: `#${id}`, strategy: 'id' };
+    const aria = $el.attr('aria-label');
+    if (aria) return { locator: `[aria-label="${aria.replace(/"/g, '\\"')}"]`, strategy: 'aria-label' };
+    const name = $el.attr('name');
+    if (name) return { locator: `${tag}[name="${name.replace(/"/g, '\\"')}"]`, strategy: 'name' };
+    const role = $el.attr('role');
+    if (role) return { locator: `[role="${role}"]`, strategy: 'role' };
+    const classes = ($el.attr('class') || '')
+      .split(/\s+/)
+      .filter((c) => /^[a-zA-Z_-][\w-]*$/.test(c))
+      .slice(0, 2);
+    if (classes.length > 0) return { locator: `${tag}.${classes.join('.')}`, strategy: 'css' };
+    return { locator: tag, strategy: 'css' };
+  };
+
+  const elements: DomElementInfo[] = [];
+  const seen = new Set<string>();
+  const pushEl = (item: Omit<DomElementInfo, 'id'>) => {
+    const key = `${item.category}:${item.locator}:${item.text}`;
+    if (seen.has(key) || elements.length >= 80) return;
+    seen.add(key);
+    elements.push({ ...item, id: `el-${elements.length + 1}` });
+  };
+
+  $('button, [role="button"], input[type="submit"], input[type="button"]').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: el.tagName,
+      category: 'button',
+      role: $el.attr('role') || 'button',
+      text: $el.text().replace(/\s+/g, ' ').trim().slice(0, 80) || $el.attr('value') || $el.attr('aria-label') || 'Button',
+      type: $el.attr('type'),
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  const internalLinks: string[] = [];
+  $('a[href]').each((_, el) => {
+    const $el = $(el);
+    const href = $el.attr('href') || '';
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: 'a',
+      category: 'link',
+      role: 'link',
+      text: $el.text().replace(/\s+/g, ' ').trim().slice(0, 80) || $el.attr('aria-label') || href || 'Link',
+      href,
+      locator,
+      locatorStrategy: strategy,
+    });
+    try {
+      const resolved = new URL(href, finalUrl);
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return;
+      const sameHost = resolved.hostname === params.rootHost;
+      const subdomainMatch = params.followSubdomains && resolved.hostname.endsWith(`.${params.rootHost}`);
+      if (sameHost || subdomainMatch) {
+        const clean = `${resolved.origin}${resolved.pathname}${resolved.search}`;
+        internalLinks.push(clean);
+        params.discoveredUrls.add(clean);
+        if (params.depth + 1 <= params.maxDepth) {
+          if (!params.visited.has(clean) && params.queue.length < params.maxPages * 3) {
+            params.queue.push({ url: clean, depth: params.depth + 1 });
+          }
+        } else if (!params.visited.has(clean)) {
+          params.recordSkip(clean, `Exceeded max crawl depth (${params.maxDepth})`);
+        }
+      }
+    } catch {
+      // Skip malformed href
+    }
+  });
+
+  $('form').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: 'form',
+      category: 'form',
+      text: $el.attr('aria-label') || $el.attr('name') || $el.attr('action') || 'Form',
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  $('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea').each((_, el) => {
+    const $el = $(el);
+    const type = ($el.attr('type') || 'text').toLowerCase();
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: el.tagName,
+      category: type === 'file' ? 'upload' : 'input',
+      text: $el.attr('placeholder') || $el.attr('aria-label') || $el.attr('name') || type,
+      type,
+      name: $el.attr('name'),
+      placeholder: $el.attr('placeholder'),
+      required: $el.attr('required') !== undefined,
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  $('select').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    const opts = $el.find('option').map((_, o) => $(o).text().trim()).get().filter(Boolean).slice(0, 8);
+    pushEl({
+      tag: 'select',
+      category: 'dropdown',
+      text: $el.attr('aria-label') || $el.attr('name') || 'Dropdown',
+      name: $el.attr('name'),
+      options: opts,
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  $('nav, [role="menu"], [role="menubar"]').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: el.tagName,
+      category: 'menu',
+      role: $el.attr('role') || 'navigation',
+      text: $el.attr('aria-label') || 'Navigation Menu',
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  $('table').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: 'table',
+      category: 'table',
+      text: `Table (${$el.find('tr').length} rows)`,
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  $('img').each((_, el) => {
+    const $el = $(el);
+    const { locator, strategy } = buildLocator(el);
+    pushEl({
+      tag: 'img',
+      category: 'image',
+      text: $el.attr('alt') || 'Image',
+      src: $el.attr('src'),
+      alt: $el.attr('alt'),
+      locator,
+      locatorStrategy: strategy,
+    });
+  });
+
+  const counts = {
+    buttons: $('button, [role="button"], input[type="submit"], input[type="button"]').length,
+    links: $('a[href]').length,
+    forms: $('form').length,
+    inputs: $('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea').length,
+    dropdowns: $('select').length,
+    menus: $('nav, [role="menu"], [role="menubar"]').length,
+    tables: $('table').length,
+    images: $('img').length,
+    uploads: $('input[type="file"]').length,
+    dynamicWidgets: $('[role="tab"], [role="dialog"], [role="combobox"], [aria-expanded]').length,
+  };
+
+  const hasLoginForm = Boolean($('input[type="password"]').length > 0 || $('form[action*="login"], form[action*="signin"]').length > 0);
+  const hasSearchForm = Boolean($('input[type="search"], [role="search"]').length > 0);
+  const hasFileUpload = $('input[type="file"]').length > 0;
+  const antiBot = detectAntiBot(html, title, res.status);
+
+  const a11yIssues: AnalyzedPage['accessibilityIssues'] = [];
+  const imgsNoAlt = $('img').filter((_, img) => $(img).attr('alt') === undefined).length;
+  if (imgsNoAlt > 0) {
+    a11yIssues.push({ severity: 'error', rule: 'img-alt', detail: `${imgsNoAlt} image(s) missing alt attribute` });
+  }
+  if (!$('html').attr('lang')) {
+    a11yIssues.push({ severity: 'warning', rule: 'html-has-lang', detail: 'Document <html> element is missing a lang attribute' });
+  }
+  if ($('h1').length === 0) {
+    a11yIssues.push({ severity: 'warning', rule: 'page-has-heading-one', detail: 'No primary <h1> heading found on page' });
+  }
+
+  const unsupported: UnsupportedElementInfo[] = [];
+  const canvases = $('canvas').length;
+  if (canvases > 0) {
+    unsupported.push({
+      pagePath,
+      category: 'HTML5 Canvas / WebGL',
+      detail: `${canvases} <canvas> element(s) detected`,
+      manualReason: 'Pixel-based canvas rendering requires visual/manual verification beyond standard DOM selectors.',
+    });
+  }
+  if (antiBot) {
+    unsupported.push({
+      pagePath,
+      category: 'CAPTCHA / Anti-Bot Guard',
+      detail: antiBot,
+      manualReason: 'Human challenge / bot protection prevents automated submission and requires manual QA or staging bypass token.',
+    });
+  }
+
+  const brokenLinks = params.checkBrokenLinks
+    ? await checkBrokenLinksSample(internalLinks, parsedFinal.origin)
+    : [];
+
+  return {
+    antiBot,
+    unsupported,
+    page: {
+      id: crypto.randomUUID(),
+      url: finalUrl,
+      path: pagePath,
+      title,
+      statusCode: res.status,
+      loadTimeMs,
+      archetype: inferArchetype(parsedFinal.pathname, title, counts, hasLoginForm, hasSearchForm),
+      metaDescription: $('meta[name="description"]').attr('content') || '',
+      lang: $('html').attr('lang') || '',
+      headings: $('h1, h2, h3').map((_, h) => $(h).text().trim()).get().filter(Boolean).slice(0, 12),
+      elementCounts: counts,
+      elements,
+      internalLinks: Array.from(new Set(internalLinks)).slice(0, 30),
+      brokenLinks,
+      accessibilityIssues: a11yIssues,
+      responsiveCheck: { desktopOverflow: false, mobileOverflow: false },
+      hasLoginForm,
+      hasSearchForm,
+      hasFileUpload,
+      antiBotDetected: antiBot,
+    },
+  };
+}
+
 export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<WebsiteAnalysisReport> {
   const startTime = Date.now();
   const emit = (
@@ -266,7 +543,18 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
   }
 
   emit('browser', 24, 'Launching isolated headless Chromium browser session...');
-  const browser = await launchIsolatedBrowser();
+  let browser: Awaited<ReturnType<typeof launchIsolatedBrowser>> | null = null;
+  try {
+    browser = await launchIsolatedBrowser();
+  } catch (launchErr) {
+    emit(
+      'browser',
+      26,
+      `Headless Chromium unavailable in runtime (${launchErr instanceof Error ? launchErr.message : 'no binary'}); running HTTP + Cheerio DOM inspection.`,
+      'warn'
+    );
+  }
+
   const visited = new Set<string>();
   const discoveredUrls = new Set<string>([targetUrl.toString()]);
   const skippedPages: SkippedPageInfo[] = [];
@@ -283,6 +571,68 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
     skippedPages.push({ url, reason });
   };
 
+  if (!browser) {
+    while (queue.length > 0 && analyzedPages.length < maxPages) {
+      const next = queue.shift()!;
+      const normUrl = next.url.split('#')[0];
+      if (visited.has(normUrl)) continue;
+      visited.add(normUrl);
+
+      const urlCheck = await validatePublicUrl(normUrl);
+      if (!urlCheck.valid || !urlCheck.url) {
+        recordSkip(normUrl, urlCheck.error || 'Restricted or unsafe target URL');
+        continue;
+      }
+      if (respectRobots && !isPathAllowedByRobots(urlCheck.url.pathname, robots.disallowedPaths)) {
+        recordSkip(urlCheck.url.toString(), 'Disallowed by robots.txt rule');
+        continue;
+      }
+
+      const pct = Math.min(88, 28 + Math.round((analyzedPages.length / maxPages) * 58));
+      emit('crawl', pct, `Inspecting HTML DOM at ${urlCheck.url.pathname || '/'}...`);
+      try {
+        const res = await analyzePageWithHttp({
+          targetUrl: urlCheck.url,
+          rootHost: targetUrl.hostname,
+          followSubdomains,
+          depth: next.depth,
+          maxDepth,
+          maxPages,
+          timeoutMs,
+          visited,
+          queue,
+          discoveredUrls,
+          recordSkip,
+          checkBrokenLinks: analyzedPages.length === 0,
+        });
+        if (analyzedPages.length === 0) {
+          rootFinalUrl = res.page.url;
+          rootAntiBot = res.antiBot;
+        }
+        discoveredUrls.add(res.page.url);
+        unsupportedElements.push(...res.unsupported);
+        analyzedPages.push(res.page);
+        emit(
+          'crawl',
+          Math.min(92, pct + 6),
+          `Analyzed ${res.page.path} (${res.page.archetype}) — ${res.page.elements.length} elements mapped via HTTP inspection`,
+          res.antiBot ? 'warn' : 'success',
+          res.page
+        );
+      } catch (httpErr) {
+        const reason = httpErr instanceof Error ? httpErr.message : String(httpErr);
+        recordSkip(urlCheck.url.toString(), `HTTP inspection failed: ${reason}`);
+        emit('crawl', pct, `Failed to inspect ${urlCheck.url.pathname}: ${reason}`, 'error');
+      }
+    }
+
+    for (const rem of queue) {
+      const norm = rem.url.split('#')[0];
+      if (!visited.has(norm)) {
+        recordSkip(norm, `Stopped after reaching max crawl limit (${maxPages} page(s))`);
+      }
+    }
+  } else {
   try {
     const context = await createSafeContext(browser, { width: 1440, height: 900 });
 
@@ -808,6 +1158,7 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
     await context.close().catch(() => {});
   } finally {
     await browser.close().catch(() => {});
+  }
   }
 
   const totalElements = analyzedPages.reduce(

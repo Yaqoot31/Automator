@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import initSqlJs, { type Database } from 'sql.js';
+import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import type {
   AiMessage,
   AutomationFramework,
@@ -26,6 +27,8 @@ import type {
 } from '../src/types/index.js';
 import { decryptSecrets, encryptSecrets, maskSecretValue } from './security.js';
 
+const require = createRequire(import.meta.url);
+
 const BUNDLED_DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_DIR =
   process.env.VERCEL || process.env.VERCEL_ENV
@@ -35,6 +38,7 @@ const DB_PATH = path.join(DATA_DIR, 'automator.db');
 export const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
 let dbInstance: Database | null = null;
+let dbInitPromise: Promise<Database> | null = null;
 
 function ensureDirs() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -43,11 +47,15 @@ function ensureDirs() {
 
 function persistDb() {
   if (!dbInstance) return;
-  ensureDirs();
-  const data = dbInstance.export();
-  const tmpPath = `${DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, Buffer.from(data));
-  fs.renameSync(tmpPath, DB_PATH);
+  try {
+    ensureDirs();
+    const data = dbInstance.export();
+    const tmpPath = `${DB_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, Buffer.from(data));
+    fs.renameSync(tmpPath, DB_PATH);
+  } catch (err) {
+    console.warn('[db] Non-fatal persistDb warning:', err instanceof Error ? err.message : err);
+  }
 }
 
 function safeAddColumn(db: Database, sql: string) {
@@ -58,20 +66,87 @@ function safeAddColumn(db: Database, sql: string) {
   }
 }
 
+function resolveSqlWasmPath(): string | null {
+  const candidates: string[] = [];
+  try {
+    candidates.push(require.resolve('sql.js/dist/sql-wasm.wasm'));
+  } catch {
+    // ignore
+  }
+  candidates.push(
+    path.resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'),
+    path.resolve(path.dirname(new URL(import.meta.url).pathname), '../node_modules/sql.js/dist/sql-wasm.wasm')
+  );
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch {
+      // continue
+    }
+  }
+  return null;
+}
+
+async function initSqlEngine(): Promise<SqlJsStatic> {
+  const wasmPath = resolveSqlWasmPath();
+  if (wasmPath) {
+    try {
+      const wasmBytes = fs.readFileSync(wasmPath);
+      const wasmBinary = wasmBytes.buffer.slice(
+        wasmBytes.byteOffset,
+        wasmBytes.byteOffset + wasmBytes.byteLength
+      );
+      return await initSqlJs({ wasmBinary });
+    } catch (wasmErr) {
+      console.warn('[db] wasmBinary load failed, trying locateFile:', wasmErr instanceof Error ? wasmErr.message : wasmErr);
+    }
+    try {
+      return await initSqlJs({ locateFile: () => wasmPath });
+    } catch (locErr) {
+      console.warn('[db] locateFile initSqlJs failed, falling back to asm.js:', locErr instanceof Error ? locErr.message : locErr);
+    }
+  } else {
+    try {
+      return await initSqlJs();
+    } catch (defaultErr) {
+      console.warn('[db] default initSqlJs failed, falling back to asm.js:', defaultErr instanceof Error ? defaultErr.message : defaultErr);
+    }
+  }
+
+  // Pure JS asm fallback so serverless initialization never fails even if WASM cannot be loaded
+  const asmInit = require('sql.js/dist/sql-asm.js') as () => Promise<SqlJsStatic>;
+  return asmInit();
+}
+
+function openDatabaseBuffer(SQL: SqlJsStatic, filePath: string): Database | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const fileBuf = fs.readFileSync(filePath);
+    if (!fileBuf || fileBuf.length === 0) return null;
+    return new SQL.Database(fileBuf);
+  } catch (err) {
+    console.warn(`[db] Failed to open ${filePath}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
-  ensureDirs();
-  const SQL = await initSqlJs();
-  const bundledDbPath = path.join(BUNDLED_DATA_DIR, 'automator.db');
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuf = fs.readFileSync(DB_PATH);
-    dbInstance = new SQL.Database(fileBuf);
-  } else if (DATA_DIR !== BUNDLED_DATA_DIR && fs.existsSync(bundledDbPath)) {
-    const fileBuf = fs.readFileSync(bundledDbPath);
-    dbInstance = new SQL.Database(fileBuf);
-  } else {
-    dbInstance = new SQL.Database();
-  }
+  if (dbInitPromise) return dbInitPromise;
+
+  dbInitPromise = (async () => {
+    ensureDirs();
+    const SQL = await initSqlEngine();
+    const bundledDbPath = path.join(BUNDLED_DATA_DIR, 'automator.db');
+
+    let instance = openDatabaseBuffer(SQL, DB_PATH);
+    if (!instance && DATA_DIR !== BUNDLED_DATA_DIR) {
+      instance = openDatabaseBuffer(SQL, bundledDbPath);
+    }
+    if (!instance) {
+      instance = new SQL.Database();
+    }
+    dbInstance = instance;
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -256,6 +331,13 @@ export async function getDb(): Promise<Database> {
 
   persistDb();
   return dbInstance;
+  })().catch((err) => {
+    dbInitPromise = null;
+    dbInstance = null;
+    throw err;
+  });
+
+  return dbInitPromise;
 }
 
 function queryAll<T = Record<string, unknown>>(

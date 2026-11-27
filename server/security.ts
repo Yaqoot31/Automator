@@ -1,14 +1,48 @@
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import type { Request, Response, NextFunction } from 'express';
 import type { UserRole } from '../src/types/index.js';
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
-    ? process.env.SESSION_SECRET
-    : crypto.randomBytes(32).toString('hex');
+function resolveDeterministicFallbackSeed(): string {
+  const parts: string[] = [
+    process.env.FIREBASE_PROJECT_ID || '',
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || '',
+  ];
+  try {
+    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as {
+        projectId?: string;
+        appId?: string;
+      };
+      if (cfg.projectId) parts.push(cfg.projectId);
+      if (cfg.appId) parts.push(cfg.appId);
+    }
+  } catch {
+    // Ignore config read errors here
+  }
+  const seed = parts.filter(Boolean).join(':');
+  if (seed) {
+    return crypto.createHash('sha256').update(`automator-fallback:${seed}`).digest('hex');
+  }
+  return crypto.randomBytes(32).toString('hex');
+}
+
+const HAS_EXPLICIT_SESSION_SECRET =
+  Boolean(process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16);
+
+if (!HAS_EXPLICIT_SESSION_SECRET && (process.env.VERCEL || process.env.VERCEL_ENV || process.env.NODE_ENV === 'production')) {
+  console.warn(
+    '[security] SESSION_SECRET env var is missing or <16 chars; using deterministic fallback seed. Configure SESSION_SECRET in production environment variables.'
+  );
+}
+
+const SESSION_SECRET = HAS_EXPLICIT_SESSION_SECRET
+  ? process.env.SESSION_SECRET!
+  : resolveDeterministicFallbackSeed();
 
 const ENCRYPTION_KEY = crypto
   .createHash('sha256')
@@ -208,6 +242,7 @@ export interface AuthTokenPayload {
   email: string;
   name: string;
   role: UserRole;
+  emailVerified?: boolean;
   exp: number;
 }
 

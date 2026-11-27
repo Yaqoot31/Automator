@@ -1230,10 +1230,13 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
                   )}
                 </div>
                 <div className="space-y-2 text-center sm:text-left lg:text-center xl:text-left">
-                  <div className="text-xs font-medium text-[var(--text-muted)]">
-                    Principal Automation Architect
+                  <div className="text-xs font-medium text-[var(--accent-primary)]">
+                    Project by Coders31
                   </div>
-                  <h3 className="font-display font-bold text-lg">QA Engineering Systems</h3>
+                  <h3 className="font-display font-bold text-lg">Yaqoot Nawab</h3>
+                  <div className="text-xs font-medium text-[var(--text-muted)]">
+                    Architecture, Design &amp; Full-Stack Development
+                  </div>
                   <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
                     Dedicated to deterministic explicit waits, transparent crawl boundaries, zero-leak vault hygiene, and ISO-aligned SQA traceability.
                   </p>
@@ -1397,8 +1400,12 @@ export function AuthGate({ onAuthenticated, theme, onToggleTheme }: AuthGateProp
             </button>
           </div>
         </div>
-        <div className="max-w-[1360px] mx-auto pt-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-[var(--text-muted)]">
-          <span>© {new Date().getFullYear()} Automator AI. All rights reserved.</span>
+        <div className="max-w-[1360px] mx-auto pt-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-[var(--text-muted)] text-center sm:text-left">
+          <span>
+            © {new Date().getFullYear()} Automator AI · Project by{' '}
+            <strong className="text-[var(--text-secondary)]">Coders31</strong> · Architected, Designed &amp; Developed by{' '}
+            <strong className="text-[var(--text-secondary)]">Yaqoot Nawab</strong>
+          </span>
           <span>Responsive QA &amp; SQA Engineering Suite · 320px–1920px+</span>
         </div>
       </footer>

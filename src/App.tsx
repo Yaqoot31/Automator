@@ -42,6 +42,7 @@ import {
   firebaseGoogleLoginApi,
   getSessionApi,
   getSqaOverviewApi,
+  getTestRunApi,
   listProjectsApi,
   listTestRunsApi,
   logoutApi,
@@ -251,14 +252,23 @@ export default function App() {
     return () => unsubscribeCount();
   }, [firebaseUser, user, mirrorFirestore]);
 
-  // Real-time WebSocket subscription for analysis & test execution
+  // Real-time WebSocket subscription for analysis & test execution (with serverless guard)
   useEffect(() => {
     if (!token) return;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+    if (window.location.hostname.endsWith('.vercel.app')) return;
+    let ws: WebSocket | null = null;
+    try {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+    } catch {
+      return;
+    }
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'auth', token }));
+      ws?.send(JSON.stringify({ type: 'auth', token }));
+    };
+    ws.onerror = () => {
+      // Serverless deployments without WebSocket support fall back to HTTP polling
     };
 
     ws.onmessage = (event) => {
@@ -321,8 +331,33 @@ export default function App() {
       }
     };
 
-    return () => ws.close();
+    return () => {
+      ws?.close();
+    };
   }, [token, refreshWorkspaceData, mirrorFirestore]);
+
+  // HTTP polling fallback for active test runs (essential when WebSockets are unavailable)
+  const activeRunId = activeRun?.id || null;
+  const activeRunStatus = activeRun?.status || null;
+  useEffect(() => {
+    if (!token || !activeRunId) return;
+    if (activeRunStatus !== 'running' && activeRunStatus !== 'queued') return;
+
+    const timer = window.setInterval(() => {
+      getTestRunApi(token, activeRunId)
+        .then((res) => {
+          setActiveRun(res.run);
+          setRuns((prev) => [res.run, ...prev.filter((r) => r.id !== res.run.id)]);
+          if (res.run.status !== 'running' && res.run.status !== 'queued') {
+            mirrorFirestore(() => upsertTestRunToFirestore(res.run));
+            refreshWorkspaceData(token).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 2500);
+
+    return () => window.clearInterval(timer);
+  }, [token, activeRunId, activeRunStatus, refreshWorkspaceData, mirrorFirestore]);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || null;
 
@@ -378,6 +413,34 @@ export default function App() {
       });
 
       upsertProjectInState(created.project);
+      setAnalysisLogs((prev) => {
+        if (prev.length > 0) return prev;
+        const nowIso = new Date().toISOString();
+        const fallbackLogs: LiveAnalysisLog[] = [
+          {
+            stage: 'robots',
+            progress: 15,
+            message: analysis.robotsSummary,
+            level: analysis.robotsAllowed ? 'info' : 'warn',
+            timestamp: nowIso,
+          },
+          ...analysis.pages.map((p, idx) => ({
+            stage: 'crawl',
+            progress: Math.min(95, 30 + Math.round(((idx + 1) / Math.max(1, analysis.pages.length)) * 60)),
+            message: `Analyzed ${p.path} (${p.archetype}) — ${p.elements.length} elements mapped`,
+            level: (p.antiBotDetected ? 'warn' : 'success') as LiveAnalysisLog['level'],
+            timestamp: nowIso,
+          })),
+          {
+            stage: 'complete',
+            progress: 100,
+            message: `Analysis complete: ${analysis.summary.totalPages} page(s), ${analysis.summary.totalElements} elements mapped.`,
+            level: 'success',
+            timestamp: nowIso,
+          },
+        ];
+        return fallbackLogs;
+      });
       mirrorFirestore(async () => {
         await upsertProjectToFirestore(created.project);
         await upsertTestCasesToFirestore(created.project.id, created.project.testCases);
@@ -465,8 +528,12 @@ export default function App() {
     if (!token || !activeProject) return;
     const res = await startTestRunApi(token, activeProject.id, testCaseIds);
     setActiveRun(res.run);
+    setRuns((prev) => [res.run, ...prev.filter((r) => r.id !== res.run.id)]);
     setActiveView('runner');
     mirrorFirestore(() => upsertTestRunToFirestore(res.run));
+    if (res.run.status !== 'running' && res.run.status !== 'queued') {
+      refreshWorkspaceData(token).catch(() => {});
+    }
   };
 
   const handleCancelRun = async (runId: string) => {
@@ -930,7 +997,10 @@ export default function App() {
         <footer className="border-t py-4 px-4 sm:px-6 lg:px-8 text-xs text-[var(--text-muted)]">
           <div className="max-w-[1440px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
             <span>Automator AI — Website Automation, SQA &amp; Analytics Platform</span>
-            <span>Playwright · Cypress · Selenium · Java · JavaScript · TypeScript · Python</span>
+            <span>
+              Project by <strong className="text-[var(--text-secondary)]">Coders31</strong> · Architected, Designed &amp; Developed by{' '}
+              <strong className="text-[var(--text-secondary)]">Yaqoot Nawab</strong>
+            </span>
           </div>
         </footer>
       </div>

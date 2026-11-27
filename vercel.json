@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "{data/**,firebase-applet-config.json,node_modules/sql.js/dist/sql-wasm.wasm,node_modules/pdfkit/js/data/**}"
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",

@@ -316,6 +316,10 @@ export async function listTestRunsApi(token: string, projectId?: string) {
   return apiRequest<{ runs: TestRunRecord[] }>(`/api/runs${qs}`, { token });
 }
 
+export async function getTestRunApi(token: string, runId: string) {
+  return apiRequest<{ run: TestRunRecord }>(`/api/runs/${encodeURIComponent(runId)}`, { token });
+}
+
 export async function validateCodeApi(
   token: string,
   language: ProjectFile['language'],
