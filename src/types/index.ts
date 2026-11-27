@@ -1,4 +1,4 @@
-export type TestingTool = 'selenium' | 'cypress';
+export type TestingTool = 'selenium' | 'cypress' | 'playwright';
 
 export type ProgrammingLanguage = 'java' | 'javascript' | 'typescript' | 'python';
 
@@ -9,7 +9,9 @@ export type AutomationFramework =
   | 'selenium-js'
   | 'cypress-ts'
   | 'selenium-ts'
-  | 'selenium-python-pytest';
+  | 'playwright-ts'
+  | 'selenium-python-pytest'
+  | 'playwright-python';
 
 export type TestingApproach = 'pom' | 'data-driven' | 'bdd-style' | 'hybrid';
 
@@ -24,19 +26,33 @@ export type AccentColor = 'amber' | 'teal' | 'cobalt' | 'emerald';
 export type LayoutDensity = 'compact' | 'comfortable' | 'spacious';
 
 export type WorkspaceView =
+  | 'dashboard'
   | 'analyzer'
   | 'tests'
+  | 'sqa'
   | 'studio'
   | 'runner'
   | 'reports'
   | 'projects'
   | 'settings';
 
+export type UserRole =
+  | 'admin'
+  | 'project_manager'
+  | 'qa_lead'
+  | 'sqa_engineer'
+  | 'developer'
+  | 'viewer'
+  | 'engineer';
+
 export interface UserProfile {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'engineer';
+  role: UserRole;
+  emailVerified: boolean;
+  jobTitle?: string;
+  organization?: string;
   createdAt: string;
 }
 
@@ -121,6 +137,18 @@ export interface AnalyzedPage {
   antiBotDetected?: string;
 }
 
+export interface SkippedPageInfo {
+  url: string;
+  reason: string;
+}
+
+export interface UnsupportedElementInfo {
+  pagePath: string;
+  category: string;
+  detail: string;
+  manualReason: string;
+}
+
 export interface WebsiteAnalysisReport {
   id: string;
   url: string;
@@ -132,6 +160,10 @@ export interface WebsiteAnalysisReport {
   analyzedAt: string;
   durationMs: number;
   pages: AnalyzedPage[];
+  discoveredUrls?: string[];
+  skippedPages?: SkippedPageInfo[];
+  unsupportedElements?: UnsupportedElementInfo[];
+  coverageScope?: 'single-page' | 'partial-crawl' | 'full-discovered';
   summary: {
     totalPages: number;
     totalElements: number;
@@ -163,6 +195,21 @@ export type TestCaseCategory =
   | 'accessibility'
   | 'browser-compat';
 
+export type TestPriority = 'Critical' | 'High' | 'Medium' | 'Low';
+export type TestSeverity = 'Critical' | 'Major' | 'Minor';
+export type SqaExecutionStatus = 'Pass' | 'Fail' | 'Blocked' | 'Not Run';
+export type AutomationStatus = 'Automated' | 'Manual';
+export type TestingType =
+  | 'Automated'
+  | 'Manual'
+  | 'Regression'
+  | 'Smoke'
+  | 'Sanity'
+  | 'Functional'
+  | 'Integration'
+  | 'Responsive'
+  | 'Cross-Browser';
+
 export interface TestStep {
   stepNumber: number;
   action:
@@ -188,15 +235,27 @@ export interface TestCase {
   id: string;
   code: string;
   title: string;
+  module?: string;
   category: TestCaseCategory;
   scenarioType: 'positive' | 'negative' | 'boundary' | 'exploratory';
   pagePath: string;
   scenario: string;
   preconditions: string;
+  testData?: string;
   steps: TestStep[];
   expectedResult: string;
   actualResult?: string;
-  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'blocked';
+  sqaStatus?: SqaExecutionStatus;
+  priority?: TestPriority;
+  severity?: TestSeverity;
+  automationStatus?: AutomationStatus;
+  testingType?: TestingType;
+  assignee?: string;
+  suiteId?: string;
+  requirementId?: string;
+  executionDate?: string;
+  comments?: string;
   durationMs?: number;
   screenshotUrl?: string;
   enabled: boolean;
@@ -243,6 +302,14 @@ export interface ProjectSecretMeta {
   updatedAt: string;
 }
 
+export interface ProjectTeamMember {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  addedAt: string;
+}
+
 export interface AutomationProject {
   id: string;
   userId: string;
@@ -252,12 +319,18 @@ export interface AutomationProject {
   tool: TestingTool;
   language: ProgrammingLanguage;
   framework: AutomationFramework;
+  selectedFrameworks?: AutomationFramework[];
   approach: TestingApproach;
   analysis: WebsiteAnalysisReport | null;
   testCases: TestCase[];
   files: ProjectFile[];
   config: ProjectConfig;
   secretsMeta: ProjectSecretMeta[];
+  teamMembers?: ProjectTeamMember[];
+  googleSheetId?: string;
+  googleSheetUrl?: string;
+  googleSheetTitle?: string;
+  googleSheetLastSync?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -298,6 +371,104 @@ export interface TestRunRecord {
   logs: TestRunLogEntry[];
   startedAt: string;
   completedAt?: string;
+}
+
+// SQA Management System Models
+
+export interface SqaTestPlan {
+  id: string;
+  projectId: string;
+  userId: string;
+  title: string;
+  strategy: string;
+  scope: string;
+  objectives: string;
+  resources: string;
+  scheduleStart: string;
+  scheduleEnd: string;
+  releaseTarget: string;
+  status: 'Draft' | 'Active' | 'Approved' | 'Completed';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SqaTestSuite {
+  id: string;
+  projectId: string;
+  userId: string;
+  name: string;
+  suiteType: 'Regression' | 'Smoke' | 'Sanity' | 'Release' | 'Functional' | 'Integration';
+  description: string;
+  testCaseIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DefectStatus =
+  | 'New'
+  | 'Assigned'
+  | 'In Progress'
+  | 'Fixed'
+  | 'Retest'
+  | 'Reopened'
+  | 'Closed';
+
+export interface SqaDefect {
+  id: string;
+  bugCode: string;
+  projectId: string;
+  userId: string;
+  title: string;
+  description: string;
+  stepsToReproduce: string;
+  expectedResult: string;
+  actualResult: string;
+  severity: TestSeverity;
+  priority: TestPriority;
+  assignedDeveloper: string;
+  reportedBy: string;
+  status: DefectStatus;
+  linkedTestCaseId?: string;
+  linkedRequirementId?: string;
+  screenshotUrl?: string;
+  attachmentName?: string;
+  resolutionNotes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SqaRequirement {
+  id: string;
+  reqCode: string;
+  projectId: string;
+  userId: string;
+  type: 'Business' | 'Functional';
+  title: string;
+  description: string;
+  module: string;
+  priority: TestPriority;
+  linkedTestCaseIds: string[];
+  linkedDefectIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SqaRelease {
+  id: string;
+  projectId: string;
+  userId: string;
+  version: string;
+  name: string;
+  buildNumber: string;
+  environment: 'staging' | 'production' | 'qa';
+  targetDate: string;
+  buildVerified: boolean;
+  readinessStatus: 'Pending' | 'Ready' | 'At Risk' | 'Blocked';
+  approvalStatus: 'Pending' | 'Approved' | 'Rejected';
+  approvedBy?: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AiMessage {

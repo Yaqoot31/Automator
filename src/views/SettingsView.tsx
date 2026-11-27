@@ -1,4 +1,12 @@
-import { RotateCcw } from 'lucide-react';
+import { useState } from 'react';
+import {
+  RotateCcw,
+  CheckCircle2,
+  ShieldAlert,
+  UserCheck,
+  KeyRound,
+  Save,
+} from 'lucide-react';
 import type {
   AccentColor,
   AppSettings,
@@ -8,19 +16,27 @@ import type {
   UserProfile,
 } from '@/types';
 import { FRAMEWORK_OPTIONS } from '@/lib/frameworks';
+import {
+  changePasswordApi,
+  resendVerificationApi,
+  updateProfileApi,
+  verifyEmailApi,
+} from '@/lib/api';
 
 interface SettingsViewProps {
+  token: string;
   settings: AppSettings;
   user: UserProfile;
+  onUserUpdated: (user: UserProfile) => void;
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onResetSettings: () => void;
 }
 
 const THEMES: { id: ThemeMode; label: string; swatch: string }[] = [
-  { id: 'obsidian', label: 'Obsidian Dark', swatch: '#08090c' },
-  { id: 'daylight', label: 'Daylight Light', swatch: '#f8fafc' },
-  { id: 'slate', label: 'Slate Studio', swatch: '#0f141c' },
-  { id: 'cobalt', label: 'Cobalt Night', swatch: '#070b17' },
+  { id: 'obsidian', label: 'Obsidian Dark', swatch: '#07090e' },
+  { id: 'daylight', label: 'Daylight Light', swatch: '#f6f8fb' },
+  { id: 'slate', label: 'Slate Studio', swatch: '#0c121a' },
+  { id: 'cobalt', label: 'Cobalt Night', swatch: '#060b18' },
 ];
 
 const ACCENTS: { id: AccentColor; label: string; color: string }[] = [
@@ -31,20 +47,116 @@ const ACCENTS: { id: AccentColor; label: string; color: string }[] = [
 ];
 
 export function SettingsView({
+  token,
   settings,
   user,
+  onUserUpdated,
   onUpdateSettings,
   onResetSettings,
 }: SettingsViewProps) {
+  const [name, setName] = useState(user.name);
+  const [jobTitle, setJobTitle] = useState(user.jobTitle || '');
+  const [organization, setOrganization] = useState(user.organization || '');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  const [verifyCode, setVerifyCode] = useState('');
+  const [previewVerifyCode, setPreviewVerifyCode] = useState<string | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
+  const [pwNotice, setPwNotice] = useState<string | null>(null);
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileNotice(null);
+    try {
+      const res = await updateProfileApi(token, {
+        name: name.trim(),
+        jobTitle: jobTitle.trim(),
+        organization: organization.trim(),
+      });
+      onUserUpdated(res.user);
+      setProfileNotice('Profile saved.');
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Failed to update profile.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setVerifyLoading(true);
+    setProfileError(null);
+    try {
+      const res = await resendVerificationApi(token);
+      setPreviewVerifyCode(res.verificationPreviewCode || null);
+      if (res.verificationPreviewCode) {
+        setVerifyCode(res.verificationPreviewCode);
+      }
+      setProfileNotice('Verification code generated.');
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Could not send verification code.');
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const handleConfirmVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVerifyLoading(true);
+    setProfileError(null);
+    try {
+      const res = await verifyEmailApi(user.email, verifyCode.trim());
+      onUserUpdated(res.user);
+      setVerifyCode('');
+      setPreviewVerifyCode(null);
+      setProfileNotice('Email address verified successfully.');
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Verification failed.');
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError(null);
+    setPwNotice(null);
+    if (newPassword !== confirmNewPassword) {
+      setPwError('New password and confirmation do not match.');
+      return;
+    }
+    setPwLoading(true);
+    try {
+      await changePasswordApi(token, currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setPwNotice('Password updated securely.');
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : 'Could not change password.');
+    } finally {
+      setPwLoading(false);
+    }
+  };
+
   return (
-    <div className="max-w-[960px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6">
+    <div className="max-w-[960px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6 animate-view-enter">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display font-bold text-xl sm:text-2xl text-[var(--text-main)]">
-            Platform Settings
+            Profile, Security &amp; Platform Settings
           </h1>
           <p className="text-xs sm:text-sm text-[var(--text-secondary)] mt-1">
-            Customize appearance themes, workspace density, accessibility motion, and default code generation targets.
+            Manage your account profile, email verification, password, themes, and default automation framework.
           </p>
         </div>
         <button
@@ -53,9 +165,196 @@ export function SettingsView({
           className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-medium surface-panel hover:bg-[var(--surface-hover)] min-h-[44px] w-full sm:w-auto shrink-0"
         >
           <RotateCcw className="w-3.5 h-3.5" />
-          <span>Reset Defaults</span>
+          <span>Reset Visual Defaults</span>
         </button>
       </div>
+
+      {/* User Profile & Email Verification */}
+      <section className="surface-panel rounded-2xl p-4 sm:p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <UserCheck className="w-4 h-4 text-[var(--accent-primary)]" />
+            <span>Account Profile &amp; Verification</span>
+          </div>
+          <div className="text-xs font-mono">
+            {user.emailVerified ? (
+              <span className="inline-flex items-center gap-1.5 text-[var(--status-success)]">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Email Verified</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-[var(--status-warning)]">
+                <ShieldAlert className="w-4 h-4" />
+                <span>Verification Pending</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {profileError && (
+          <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs text-red-500">
+            {profileError}
+          </div>
+        )}
+        {profileNotice && (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs text-[var(--status-success)]">
+            {profileNotice}
+          </div>
+        )}
+
+        <form onSubmit={handleSaveProfile} className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="space-y-1">
+            <label className="text-[var(--text-secondary)]">Full Name</label>
+            <input
+              type="text"
+              required
+              minLength={2}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full min-h-[44px] px-3 rounded-lg surface-elevated text-sm"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[var(--text-secondary)]">Email (Verified Identity)</label>
+            <input
+              type="text"
+              disabled
+              value={`${user.email} (${user.role.replace('_', ' ')})`}
+              className="w-full min-h-[44px] px-3 rounded-lg surface-elevated font-mono text-xs opacity-75"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[var(--text-secondary)]">Job Title</label>
+            <input
+              type="text"
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+              placeholder="e.g. Senior SQA Automation Lead"
+              className="w-full min-h-[44px] px-3 rounded-lg surface-elevated text-sm"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[var(--text-secondary)]">Organization</label>
+            <input
+              type="text"
+              value={organization}
+              onChange={(e) => setOrganization(e.target.value)}
+              placeholder="e.g. Acme Engineering"
+              className="w-full min-h-[44px] px-3 rounded-lg surface-elevated text-sm"
+            />
+          </div>
+          <div className="sm:col-span-2 flex justify-end pt-1">
+            <button
+              type="submit"
+              disabled={profileSaving}
+              className="inline-flex items-center gap-2 px-5 min-h-[42px] rounded-xl font-semibold"
+              style={{ backgroundColor: 'var(--accent-primary)', color: 'var(--accent-contrast)' }}
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
+            </button>
+          </div>
+        </form>
+
+        {!user.emailVerified && (
+          <div className="pt-4 border-t space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-[var(--text-secondary)]">
+                Verify <span className="font-mono text-[var(--text-main)]">{user.email}</span> to complete account setup.
+              </span>
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={handleResendVerification}
+                className="px-3.5 min-h-[40px] rounded-lg surface-elevated font-medium hover:bg-[var(--surface-hover)] shrink-0"
+              >
+                Send Verification Code
+              </button>
+            </div>
+            {previewVerifyCode && (
+              <div className="text-[var(--text-secondary)]">
+                Generated verification code:{' '}
+                <span className="font-mono font-bold text-[var(--accent-primary)]">
+                  {previewVerifyCode}
+                </span>
+              </div>
+            )}
+            <form onSubmit={handleConfirmVerification} className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                required
+                value={verifyCode}
+                onChange={(e) => setVerifyCode(e.target.value)}
+                placeholder="Enter 6-digit verification code"
+                className="flex-1 min-h-[42px] px-3 rounded-lg surface-elevated font-mono"
+              />
+              <button
+                type="submit"
+                disabled={verifyLoading}
+                className="px-5 min-h-[42px] rounded-lg font-semibold"
+                style={{ backgroundColor: 'var(--accent-primary)', color: 'var(--accent-contrast)' }}
+              >
+                Verify Email
+              </button>
+            </form>
+          </div>
+        )}
+      </section>
+
+      {/* Change Password */}
+      <section className="surface-panel rounded-2xl p-4 sm:p-6 space-y-4">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <KeyRound className="w-4 h-4 text-[var(--accent-secondary)]" />
+          <span>Update Password</span>
+        </div>
+        {pwError && (
+          <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs text-red-500">
+            {pwError}
+          </div>
+        )}
+        {pwNotice && (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs text-[var(--status-success)]">
+            {pwNotice}
+          </div>
+        )}
+        <form onSubmit={handleChangePassword} className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <input
+            type="password"
+            required
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            placeholder="Current password"
+            className="min-h-[44px] px-3 rounded-lg surface-elevated"
+          />
+          <input
+            type="password"
+            required
+            minLength={8}
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="New password (8+ chars)"
+            className="min-h-[44px] px-3 rounded-lg surface-elevated"
+          />
+          <input
+            type="password"
+            required
+            minLength={8}
+            value={confirmNewPassword}
+            onChange={(e) => setConfirmNewPassword(e.target.value)}
+            placeholder="Confirm new password"
+            className="min-h-[44px] px-3 rounded-lg surface-elevated"
+          />
+          <div className="sm:col-span-3 flex justify-end">
+            <button
+              type="submit"
+              disabled={pwLoading}
+              className="px-5 min-h-[42px] rounded-xl surface-elevated hover:bg-[var(--accent-soft)] font-semibold"
+            >
+              {pwLoading ? 'Updating...' : 'Change Password'}
+            </button>
+          </div>
+        </form>
+      </section>
 
       {/* Theme Mode */}
       <section className="surface-panel rounded-2xl p-4 sm:p-6 space-y-4">
@@ -175,22 +474,6 @@ export function SettingsView({
             />
             <span>Reduce animations and transition motion</span>
           </label>
-        </div>
-      </section>
-
-      {/* Account Info */}
-      <section className="surface-panel rounded-2xl p-4 sm:p-6 space-y-2 text-xs">
-        <div className="text-sm font-semibold text-[var(--text-main)]">Signed-in Account</div>
-        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-1.5 sm:gap-3 text-[var(--text-secondary)]">
-          <span>
-            Name: <span className="text-[var(--text-main)] font-medium">{user.name}</span>
-          </span>
-          <span className="break-all">
-            Email: <span className="font-mono text-[var(--text-main)]">{user.email}</span>
-          </span>
-          <span>
-            Role: <span className="font-mono uppercase">{user.role}</span>
-          </span>
         </div>
       </section>
     </div>

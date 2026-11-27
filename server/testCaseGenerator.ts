@@ -3,11 +3,75 @@ import type {
   AnalyzedPage,
   TestCase,
   TestCaseCategory,
+  TestPriority,
+  TestSeverity,
+  TestingType,
   WebsiteAnalysisReport,
 } from '../src/types/index.js';
 
 function makeCode(index: number): string {
   return `TC-${String(index).padStart(3, '0')}`;
+}
+
+export const CATEGORY_LABELS: Record<TestCaseCategory, string> = {
+  homepage: 'Homepage',
+  navigation: 'Navigation & Links',
+  buttons: 'Buttons & Actions',
+  forms: 'Form Submissions',
+  validation: 'Input Validation',
+  search: 'Search',
+  dropdowns: 'Dropdowns',
+  auth: 'Authentication',
+  responsive: 'Responsive UI',
+  'broken-links': 'Broken Links',
+  performance: 'Performance',
+  'error-messages': 'Error Handling',
+  'file-upload': 'File Uploads',
+  redirects: 'Redirects',
+  accessibility: 'Accessibility',
+  'browser-compat': 'Browser Compatibility',
+};
+
+function defaultPriority(cat: TestCaseCategory): TestPriority {
+  if (cat === 'homepage' || cat === 'auth' || cat === 'navigation') return 'Critical';
+  if (cat === 'forms' || cat === 'validation' || cat === 'broken-links' || cat === 'responsive') return 'High';
+  if (cat === 'accessibility' || cat === 'performance' || cat === 'search') return 'Medium';
+  return 'Low';
+}
+
+function defaultSeverity(cat: TestCaseCategory): TestSeverity {
+  if (cat === 'homepage' || cat === 'auth' || cat === 'broken-links') return 'Critical';
+  if (cat === 'forms' || cat === 'validation' || cat === 'responsive' || cat === 'navigation') return 'Major';
+  return 'Minor';
+}
+
+function defaultTestingType(cat: TestCaseCategory): TestingType {
+  if (cat === 'homepage' || cat === 'navigation') return 'Smoke';
+  if (cat === 'responsive') return 'Responsive';
+  if (cat === 'browser-compat') return 'Cross-Browser';
+  if (cat === 'forms' || cat === 'validation' || cat === 'auth' || cat === 'search' || cat === 'dropdowns') {
+    return 'Functional';
+  }
+  return 'Automated';
+}
+
+function enrichCase(tc: TestCase): TestCase {
+  const testData = tc.steps
+    .filter((s) => s.value)
+    .map((s) => `${s.target}: ${s.value}`)
+    .join('; ');
+  return {
+    ...tc,
+    module: tc.module || CATEGORY_LABELS[tc.category] || 'Core Module',
+    testData: tc.testData || testData || 'N/A (DOM inspection)',
+    priority: tc.priority || defaultPriority(tc.category),
+    severity: tc.severity || defaultSeverity(tc.category),
+    automationStatus: tc.automationStatus || 'Automated',
+    testingType: tc.testingType || defaultTestingType(tc.category),
+    sqaStatus: tc.sqaStatus || 'Not Run',
+    actualResult: tc.actualResult || '',
+    comments: tc.comments || '',
+  };
 }
 
 export function generateTestCasesFromAnalysis(
@@ -460,25 +524,33 @@ export function generateTestCasesFromAnalysis(
     enabled: true,
   });
 
-  // Ensure every category exists in summary / deduplicate if huge
-  return cases.slice(0, 32);
-}
+  // 17. Manual review test cases for any unsupported elements detected on pages
+  for (const unsup of (analysis.unsupportedElements || []).slice(0, 4)) {
+    cases.push({
+      id: crypto.randomUUID(),
+      code: makeCode(seq++),
+      title: `Manual QA verification: ${unsup.category} on ${unsup.pagePath}`,
+      module: unsup.category,
+      category: 'browser-compat',
+      scenarioType: 'exploratory',
+      pagePath: unsup.pagePath,
+      scenario: `${unsup.detail}. ${unsup.manualReason}`,
+      preconditions: `Open ${rootPage.url} manually in target browser.`,
+      steps: [
+        {
+          stepNumber: 1,
+          action: 'navigate',
+          target: rootPage.url,
+          expected: 'Inspect interactive unsupported widget visually and functionally.',
+        },
+      ],
+      expectedResult: 'Manual QA engineer verifies behavior matches specification.',
+      automationStatus: 'Manual',
+      testingType: 'Manual',
+      status: 'pending',
+      enabled: false,
+    });
+  }
 
-export const CATEGORY_LABELS: Record<TestCaseCategory, string> = {
-  homepage: 'Homepage',
-  navigation: 'Navigation & Links',
-  buttons: 'Buttons & Actions',
-  forms: 'Form Submissions',
-  validation: 'Input Validation',
-  search: 'Search',
-  dropdowns: 'Dropdowns',
-  auth: 'Authentication',
-  responsive: 'Responsive UI',
-  'broken-links': 'Broken Links',
-  performance: 'Performance',
-  'error-messages': 'Error Handling',
-  'file-upload': 'File Uploads',
-  redirects: 'Redirects',
-  accessibility: 'Accessibility',
-  'browser-compat': 'Browser Compatibility',
-};
+  return cases.slice(0, 36).map(enrichCase);
+}

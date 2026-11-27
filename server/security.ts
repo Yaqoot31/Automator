@@ -3,6 +3,7 @@ import dns from 'node:dns/promises';
 import net from 'node:net';
 import path from 'node:path';
 import type { Request, Response, NextFunction } from 'express';
+import type { UserRole } from '../src/types/index.js';
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
@@ -38,25 +39,25 @@ export function isPrivateOrReservedIp(ip: string): boolean {
       return true;
     }
     const [a, b] = parts;
-    if (a === 0) return true; // 0.0.0.0/8
-    if (a === 10) return true; // 10.0.0.0/8
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
-    if (a === 127) return true; // Loopback 127.0.0.0/8
-    if (a === 169 && b === 254) return true; // Link-local / Metadata 169.254.0.0/16
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-    if (a === 192 && b === 0 && parts[2] === 0) return true; // 192.0.0.0/24
-    if (a === 198 && (b === 18 || b === 19)) return true; // Benchmark 198.18.0.0/15
-    if (a >= 224) return true; // Multicast & reserved
+    if (a === 0) return true;
+    if (a === 10) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 192 && b === 0 && parts[2] === 0) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    if (a >= 224) return true;
     return false;
   }
 
   if (version === 6) {
     const lower = cleanIp.toLowerCase();
     if (lower === '::' || lower === '::1') return true;
-    if (lower.startsWith('fe80:') || lower.startsWith('fec0:')) return true; // Link/site local
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // Unique local fc00::/7
-    if (lower.startsWith('ff')) return true; // Multicast
+    if (lower.startsWith('fe80:') || lower.startsWith('fec0:')) return true;
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+    if (lower.startsWith('ff')) return true;
     return false;
   }
 
@@ -192,18 +193,35 @@ export function verifyPassword(password: string, storedHash: string, salt: strin
   }
 }
 
+export function hashToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+export function generateOneTimeCode(): string {
+  // 8-char uppercase alphanumeric verification/reset code
+  return crypto.randomBytes(4).toString('hex').toUpperCase();
+}
+
 export interface AuthTokenPayload {
+  jti: string;
   userId: string;
   email: string;
   name: string;
-  role: 'admin' | 'engineer';
+  role: UserRole;
   exp: number;
 }
 
-export function signAuthToken(payload: Omit<AuthTokenPayload, 'exp'>): string {
+export function signAuthToken(
+  payload: Omit<AuthTokenPayload, 'exp' | 'jti'>,
+  rememberMe = false
+): string {
+  const ttlMs = rememberMe
+    ? 1000 * 60 * 60 * 24 * 30 // 30 days
+    : 1000 * 60 * 60 * 24; // 24 hours
   const fullPayload: AuthTokenPayload = {
     ...payload,
-    exp: Date.now() + 1000 * 60 * 60 * 24 * 7, // 7 days
+    jti: crypto.randomUUID(),
+    exp: Date.now() + ttlMs,
   };
   const data = Buffer.from(JSON.stringify(fullPayload), 'utf-8').toString('base64url');
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('base64url');
@@ -220,10 +238,66 @@ export function verifyAuthToken(token: string): AuthTokenPayload | null {
     const b = Buffer.from(expectedSig);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf-8')) as AuthTokenPayload;
-    if (!parsed.userId || !parsed.exp || parsed.exp < Date.now()) return null;
+    if (!parsed.userId || !parsed.jti || !parsed.exp || parsed.exp < Date.now()) return null;
     return parsed;
   } catch {
     return null;
+  }
+}
+
+export const SESSION_COOKIE_NAME = 'automator_session';
+
+export function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(';')) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const k = part.slice(0, eqIdx).trim();
+    const v = part.slice(eqIdx + 1).trim();
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+export function setSessionCookie(res: Response, token: string, rememberMe: boolean): void {
+  const maxAgeSec = rememberMe ? 60 * 60 * 24 * 30 : undefined;
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=None',
+    'Partitioned',
+  ];
+  if (maxAgeSec !== undefined) {
+    parts.push(`Max-Age=${maxAgeSec}`);
+  }
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+export function clearSessionCookie(res: Response): void {
+  res.setHeader(
+    'Set-Cookie',
+    `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=None; Partitioned; Max-Age=0`
+  );
+}
+
+export function isSameOriginStateChange(req: Request): boolean {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
+  if (req.headers['x-requested-with']) return true;
+  const origin = req.headers.origin;
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+  if (!origin || !host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
   }
 }
 
@@ -292,4 +366,37 @@ export function createRateLimiter(maxRequests: number, windowMs: number) {
     hits.set(key, recent);
     next();
   };
+}
+
+// Brute-force lockout tracker per email+IP
+const loginFailures = new Map<string, { count: number; lockedUntil: number }>();
+const MAX_LOGIN_ATTEMPTS = 6;
+const LOCKOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+export function checkLoginLockout(email: string, ip: string): { locked: boolean; retryAfterSec: number } {
+  const key = `${ip}:${email.toLowerCase()}`;
+  const entry = loginFailures.get(key);
+  if (!entry) return { locked: false, retryAfterSec: 0 };
+  if (entry.lockedUntil > Date.now()) {
+    return { locked: true, retryAfterSec: Math.ceil((entry.lockedUntil - Date.now()) / 1000) };
+  }
+  if (entry.lockedUntil > 0 && entry.lockedUntil <= Date.now()) {
+    loginFailures.delete(key);
+  }
+  return { locked: false, retryAfterSec: 0 };
+}
+
+export function recordLoginFailure(email: string, ip: string): void {
+  const key = `${ip}:${email.toLowerCase()}`;
+  const current = loginFailures.get(key) || { count: 0, lockedUntil: 0 };
+  const nextCount = current.count + 1;
+  loginFailures.set(key, {
+    count: nextCount,
+    lockedUntil: nextCount >= MAX_LOGIN_ATTEMPTS ? Date.now() + LOCKOUT_MS : 0,
+  });
+}
+
+export function clearLoginFailures(email: string, ip: string): void {
+  const key = `${ip}:${email.toLowerCase()}`;
+  loginFailures.delete(key);
 }

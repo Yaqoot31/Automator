@@ -11,6 +11,8 @@ import {
   ListChecks,
   Play,
   SlidersHorizontal,
+  Download,
+  Info,
 } from 'lucide-react';
 import type {
   AnalyzedPage,
@@ -22,6 +24,7 @@ import type {
   WorkspaceView,
 } from '@/types';
 import { APPROACH_OPTIONS, FRAMEWORK_OPTIONS } from '@/lib/frameworks';
+import { downloadCompleteProjectZip } from '@/lib/projectZip';
 
 export interface LiveAnalysisLog {
   stage: string;
@@ -41,6 +44,7 @@ interface AnalyzerViewProps {
   onRunAnalysis: (params: {
     url: string;
     framework: AutomationFramework;
+    selectedFrameworks: AutomationFramework[];
     approach: TestingApproach;
     maxPages: number;
     maxDepth: number;
@@ -75,8 +79,10 @@ export function AnalyzerView({
   onNavigate,
 }: AnalyzerViewProps) {
   const [urlInput, setUrlInput] = useState(project?.url || 'https://example.com');
-  const [framework, setFramework] = useState<AutomationFramework>(
-    project?.framework || defaultFramework
+  const [selectedFrameworks, setSelectedFrameworks] = useState<AutomationFramework[]>(
+    project?.selectedFrameworks && project.selectedFrameworks.length > 0
+      ? project.selectedFrameworks
+      : [project?.framework || defaultFramework]
   );
   const [approach, setApproach] = useState<TestingApproach>(project?.approach || 'pom');
   const [maxPages, setMaxPages] = useState(5);
@@ -96,13 +102,24 @@ export function AnalyzerView({
       elementFilter === 'all' ? true : el.category === elementFilter
     ) || [];
 
+  const toggleFramework = (fwId: AutomationFramework) => {
+    setSelectedFrameworks((prev) => {
+      if (prev.includes(fwId)) {
+        return prev.length === 1 ? prev : prev.filter((item) => item !== fwId);
+      }
+      return [...prev, fwId];
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim() || analyzing) return;
     setSelectedPageIdx(0);
+    const primary = selectedFrameworks[0] || defaultFramework;
     await onRunAnalysis({
       url: urlInput.trim(),
-      framework,
+      framework: primary,
+      selectedFrameworks,
       approach,
       maxPages,
       maxDepth,
@@ -111,17 +128,22 @@ export function AnalyzerView({
     });
   };
 
+  const discoveredCount = analysis?.discoveredUrls?.length ?? analysis?.pages.length ?? 0;
+  const testedCount = analysis?.pages.length ?? 0;
+  const skippedPages = analysis?.skippedPages || [];
+  const unsupportedElements = analysis?.unsupportedElements || [];
+
   return (
-    <div className="max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6">
+    <div className="max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6 animate-view-enter">
       {/* Analyzer Intake Panel */}
       <section className="surface-panel rounded-2xl p-4 sm:p-6 lg:p-7 space-y-5">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-3 sm:gap-4">
           <div className="min-w-0">
             <h1 className="font-display font-bold text-xl sm:text-2xl lg:text-3xl tracking-tight text-[var(--text-main)]">
-              AI Website Analyzer
+              Website URL Analyzer &amp; Multi-Language Generator
             </h1>
             <p className="text-xs sm:text-sm text-[var(--text-secondary)] mt-1 max-w-2xl leading-relaxed">
-              Submit any publicly accessible website URL to launch an isolated Chromium browser session, inspect live DOM structures, and synthesize a complete Selenium or Cypress automation project.
+              Enter any publicly accessible URL, select one or multiple automation stacks (Playwright, Cypress, Selenium across Java, JS, TS, Python), and inspect honest discovered, tested, and skipped page boundaries.
             </p>
           </div>
           <button
@@ -136,7 +158,7 @@ export function AnalyzerView({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-            <div className="md:col-span-12 lg:col-span-6 relative flex items-center">
+            <div className="md:col-span-8 lg:col-span-9 relative flex items-center">
               <Globe
                 className="w-4 h-4 text-[var(--text-muted)] absolute left-3.5 pointer-events-none"
                 aria-hidden="true"
@@ -155,25 +177,7 @@ export function AnalyzerView({
               />
             </div>
 
-            <div className="md:col-span-6 lg:col-span-3">
-              <label htmlFor="analyzer-framework" className="sr-only">
-                Target Automation Stack
-              </label>
-              <select
-                id="analyzer-framework"
-                value={framework}
-                onChange={(e) => setFramework(e.target.value as AutomationFramework)}
-                className="w-full h-12 px-3.5 rounded-xl surface-elevated text-sm text-[var(--text-main)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
-              >
-                {FRAMEWORK_OPTIONS.map((fw) => (
-                  <option key={fw.id} value={fw.id}>
-                    {fw.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="md:col-span-6 lg:col-span-3">
+            <div className="md:col-span-4 lg:col-span-3">
               <button
                 type="submit"
                 disabled={analyzing || !urlInput.trim()}
@@ -190,11 +194,59 @@ export function AnalyzerView({
                   </>
                 ) : (
                   <>
-                    <span>Analyze Website</span>
+                    <span>Analyze &amp; Generate</span>
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}
               </button>
+            </div>
+          </div>
+
+          {/* Multi-Language & Multi-Framework Selector */}
+          <div className="space-y-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-medium text-[var(--text-secondary)]">
+                Target Programming Languages &amp; Frameworks ({selectedFrameworks.length} selected)
+              </span>
+              <span className="text-[var(--text-muted)]">
+                Select multiple stacks to bundle parallel language folders in one ZIP
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {FRAMEWORK_OPTIONS.map((fw) => {
+                const checked = selectedFrameworks.includes(fw.id);
+                return (
+                  <button
+                    key={fw.id}
+                    type="button"
+                    onClick={() => toggleFramework(fw.id)}
+                    aria-pressed={checked}
+                    className={`p-3 rounded-xl border text-left transition-colors min-h-[44px] flex items-center justify-between gap-2 ${
+                      checked
+                        ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
+                        : 'surface-elevated hover:border-[var(--border-strong)]'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-[var(--text-main)] truncate">
+                        {fw.label}
+                      </div>
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">
+                        {fw.runnerStack}
+                      </div>
+                    </div>
+                    <span
+                      className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold shrink-0 border ${
+                        checked
+                          ? 'bg-[var(--accent-primary)] text-[var(--accent-contrast)] border-[var(--accent-primary)]'
+                          : 'border-[var(--border-strong)]'
+                      }`}
+                    >
+                      {checked ? '✓' : ''}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -344,10 +396,44 @@ export function AnalyzerView({
             </div>
           )}
 
+          {/* Honest Coverage Scope Notice */}
+          <div className="surface-panel rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-start gap-2.5">
+              <Info className="w-4 h-4 text-[var(--accent-secondary)] shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <div className="font-semibold text-[var(--text-main)]">
+                  Crawl Scope:{' '}
+                  {analysis.coverageScope === 'single-page'
+                    ? 'Single Page Inspected Only'
+                    : analysis.coverageScope === 'partial-crawl'
+                      ? 'Partial Multi-Page Crawl (Additional links skipped)'
+                      : 'All Discovered Same-Origin Pages Inspected'}
+                </div>
+                <div className="text-[var(--text-secondary)]">
+                  Discovered URLs: <span className="font-mono font-semibold">{discoveredCount}</span> · Inspected Pages:{' '}
+                  <span className="font-mono font-semibold text-[var(--status-success)]">{testedCount}</span> · Skipped Pages:{' '}
+                  <span className="font-mono font-semibold text-[var(--status-warning)]">{skippedPages.length}</span> · Unsupported Elements:{' '}
+                  <span className="font-mono font-semibold">{unsupportedElements.length}</span>
+                </div>
+              </div>
+            </div>
+            {project && (
+              <button
+                type="button"
+                onClick={() => downloadCompleteProjectZip(project)}
+                className="inline-flex items-center justify-center gap-2 px-4 min-h-[42px] rounded-xl font-semibold whitespace-nowrap shrink-0"
+                style={{ backgroundColor: 'var(--accent-primary)', color: 'var(--accent-contrast)' }}
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Project ZIP</span>
+              </button>
+            )}
+          </div>
+
           {/* KPI Strip */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
             <div className="surface-panel rounded-xl p-3.5 sm:p-4 min-w-0">
-              <div className="text-xs text-[var(--text-muted)] truncate">Pages Analyzed</div>
+              <div className="text-xs text-[var(--text-muted)] truncate">Tested Pages</div>
               <div className="font-mono font-bold text-xl sm:text-2xl mt-1 tabular-nums">
                 {analysis.summary.totalPages}
               </div>
@@ -404,7 +490,7 @@ export function AnalyzerView({
           <div className="surface-panel rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div className="text-xs text-[var(--text-secondary)] space-y-0.5 min-w-0">
               <div className="font-semibold text-sm text-[var(--text-main)]">
-                Analysis Complete · {analysis.robotsSummary}
+                Inspection Complete · {analysis.robotsSummary}
               </div>
               <div className="font-mono break-all sm:truncate sm:max-w-xl">
                 Final URL: {analysis.finalUrl} · Duration: {analysis.durationMs}ms
@@ -418,7 +504,7 @@ export function AnalyzerView({
                 className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium surface-elevated hover:bg-[var(--surface-hover)] min-h-[44px]"
               >
                 <ListChecks className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-                <span>View Test Cases ({project?.testCases.length || 0})</span>
+                <span>Test Cases ({project?.testCases.length || 0})</span>
               </button>
               <button
                 type="button"
@@ -426,7 +512,7 @@ export function AnalyzerView({
                 className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium surface-elevated hover:bg-[var(--surface-hover)] min-h-[44px]"
               >
                 <Code2 className="w-3.5 h-3.5 text-[var(--accent-secondary)]" />
-                <span>Open Script Studio ({project?.files.length || 0} files)</span>
+                <span>Script Studio ({project?.files.length || 0} files)</span>
               </button>
               <button
                 type="button"
@@ -443,13 +529,52 @@ export function AnalyzerView({
             </div>
           </div>
 
-          {/* Discovered Pages + DOM Inspector */}
+          {/* Skipped Pages & Unsupported Elements Honest Audit */}
+          {(skippedPages.length > 0 || unsupportedElements.length > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {skippedPages.length > 0 && (
+                <div className="surface-panel rounded-xl p-4 space-y-2.5">
+                  <div className="text-xs font-semibold text-[var(--status-warning)]">
+                    Skipped Pages ({skippedPages.length}) — Not Executed
+                  </div>
+                  <div className="max-h-40 overflow-y-auto divide-y text-xs">
+                    {skippedPages.map((sp, i) => (
+                      <div key={i} className="py-2 space-y-0.5">
+                        <div className="font-mono text-[var(--text-main)] break-all">{sp.url}</div>
+                        <div className="text-[var(--text-muted)]">{sp.reason}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {unsupportedElements.length > 0 && (
+                <div className="surface-panel rounded-xl p-4 space-y-2.5">
+                  <div className="text-xs font-semibold text-[var(--text-main)]">
+                    Unsupported / Complex Elements ({unsupportedElements.length}) — Manual QA Needed
+                  </div>
+                  <div className="max-h-40 overflow-y-auto divide-y text-xs">
+                    {unsupportedElements.map((ue, i) => (
+                      <div key={i} className="py-2 space-y-0.5">
+                        <div className="font-mono text-[var(--accent-primary)]">
+                          {ue.pagePath} · {ue.category}
+                        </div>
+                        <div className="text-[var(--text-secondary)]">{ue.detail}</div>
+                        <div className="text-[var(--text-muted)]">{ue.manualReason}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Tested Pages + DOM Inspector */}
           {analysis.pages.length > 0 && activePage && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
-              {/* Page List */}
               <div className="lg:col-span-4 surface-panel rounded-xl p-4 space-y-3 min-w-0">
                 <div className="text-xs font-semibold text-[var(--text-secondary)]">
-                  Discovered Routes ({analysis.pages.length})
+                  Tested Routes ({analysis.pages.length})
                 </div>
                 <div className="space-y-2">
                   {analysis.pages.map((p, idx) => {
@@ -485,7 +610,6 @@ export function AnalyzerView({
                 </div>
               </div>
 
-              {/* Active Page Details & Responsive Element Inspector */}
               <div className="lg:col-span-8 surface-panel rounded-xl p-4 sm:p-5 space-y-5 min-w-0">
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b">
                   <div className="space-y-1 min-w-0">
@@ -534,7 +658,6 @@ export function AnalyzerView({
                   </div>
                 </div>
 
-                {/* Category Filter Bar (Horizontal scroll on mobile, wrapped on sm+) */}
                 <div className="flex sm:flex-wrap gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0">
                   {ELEMENT_CATEGORIES.map((cat) => {
                     const active = elementFilter === cat.id;
@@ -578,7 +701,7 @@ export function AnalyzerView({
                   )}
                 </div>
 
-                {/* Desktop DOM Elements Table (md+) */}
+                {/* Desktop DOM Elements Table */}
                 <div className="hidden md:block overflow-x-auto border rounded-xl">
                   <table className="w-full text-left text-xs">
                     <thead className="surface-elevated text-[var(--text-secondary)] border-b">
@@ -617,7 +740,6 @@ export function AnalyzerView({
                   </table>
                 </div>
 
-                {/* Accessibility & Broken Links */}
                 {(activePage.accessibilityIssues.length > 0 || activePage.brokenLinks.length > 0) && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                     {activePage.accessibilityIssues.length > 0 && (

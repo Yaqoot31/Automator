@@ -42,13 +42,17 @@ interface StudioEditorViewProps {
   token: string;
   project: AutomationProject | null;
   onSaveFiles: (files: ProjectFile[]) => Promise<void>;
-  onRegenerate: (framework: AutomationFramework, approach: TestingApproach) => Promise<void>;
+  onRegenerate: (
+    framework: AutomationFramework,
+    approach: TestingApproach,
+    selectedFrameworks?: AutomationFramework[]
+  ) => Promise<void>;
   onRunSuite: () => Promise<void>;
   onNavigate: (view: WorkspaceView) => void;
 }
 
 const AI_QUICK_PROMPTS = [
-  'Convert this script from Selenium to Cypress',
+  'Convert this script from Selenium to Playwright TypeScript',
   'Convert this automation script into Python Pytest',
   'Generate additional negative test cases for this website',
   'Improve element locators to use resilient selectors',
@@ -67,20 +71,20 @@ export function StudioEditorView({
   const [files, setFiles] = useState<ProjectFile[]>(() => project?.files || []);
   const [openTabs, setOpenTabs] = useState<string[]>(() => {
     const firstFile =
-      project?.files.find((f) => f.path.startsWith('tests/')) ||
-      project?.files.find((f) => f.path.startsWith('pages/')) ||
+      project?.files.find((f) => f.path.includes('tests/')) ||
+      project?.files.find((f) => f.path.includes('pages/')) ||
       project?.files[0];
     return firstFile ? [firstFile.path] : [];
   });
   const [activePath, setActivePath] = useState<string>(() => {
     const firstFile =
-      project?.files.find((f) => f.path.startsWith('tests/')) ||
-      project?.files.find((f) => f.path.startsWith('pages/')) ||
+      project?.files.find((f) => f.path.includes('tests/')) ||
+      project?.files.find((f) => f.path.includes('pages/')) ||
       project?.files[0];
     return firstFile?.path || '';
   });
   const [framework, setFramework] = useState<AutomationFramework>(
-    () => project?.framework || 'cypress-ts'
+    () => project?.framework || 'playwright-ts'
   );
   const [approach, setApproach] = useState<TestingApproach>(
     () => project?.approach || 'pom'
@@ -138,7 +142,7 @@ export function StudioEditorView({
           <Globe className="w-10 h-10 mx-auto text-[var(--accent-primary)]" />
           <h2 className="font-display font-bold text-xl">No Project Open in Script Studio</h2>
           <p className="text-sm text-[var(--text-secondary)] max-w-md mx-auto">
-            Analyze a website URL first to generate complete Java, JavaScript, TypeScript, or Python Selenium &amp; Cypress projects.
+            Analyze a website URL first to generate complete Java, JavaScript, TypeScript, or Python Playwright, Selenium &amp; Cypress projects.
           </p>
           <button
             type="button"
@@ -249,7 +253,7 @@ export function StudioEditorView({
   const handleRegenerateProject = async () => {
     setRegenerating(true);
     try {
-      await onRegenerate(framework, approach);
+      await onRegenerate(framework, approach, [framework]);
     } finally {
       setRegenerating(false);
     }
@@ -287,7 +291,7 @@ export function StudioEditorView({
   const hasModified = files.some((f) => f.isModified);
 
   return (
-    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-5 space-y-4">
+    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-5 space-y-4 animate-view-enter">
       {/* Studio Toolbar */}
       <div className="surface-panel rounded-xl p-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
         <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5">
@@ -324,8 +328,14 @@ export function StudioEditorView({
             className="inline-flex items-center justify-center gap-1.5 min-h-[42px] px-3.5 rounded-lg text-xs font-medium surface-elevated hover:bg-[var(--surface-hover)] w-full sm:w-auto"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
-            <span>{regenerating ? 'Generating...' : 'Regenerate Suite'}</span>
+            <span>{regenerating ? 'Generating...' : 'Regenerate Stack'}</span>
           </button>
+
+          {project.selectedFrameworks && project.selectedFrameworks.length > 1 && (
+            <span className="text-[11px] font-mono text-[var(--text-muted)]">
+              Multi-stack bundle: {project.selectedFrameworks.join(' · ')}
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
@@ -470,7 +480,6 @@ export function StudioEditorView({
             showAiPanel ? 'lg:col-span-5' : 'lg:col-span-9'
           } surface-panel rounded-xl overflow-hidden flex-col min-h-[380px] sm:min-h-[480px] lg:min-h-[540px] max-h-[72dvh] lg:max-h-[680px] min-w-0`}
         >
-          {/* Tabs Bar */}
           <div className="flex flex-wrap sm:flex-nowrap items-center justify-between border-b bg-[var(--surface-elevated)] px-2 py-1.5 min-h-[44px] gap-2">
             <div className="flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar flex-1">
               {openTabs.map((tabPath) => {
@@ -555,7 +564,6 @@ export function StudioEditorView({
             )}
           </div>
 
-          {/* Search & Replace Bar */}
           {showFind && activeFile && (
             <div className="border-b bg-[var(--surface-elevated)]/60 p-2.5 flex flex-wrap items-center gap-2 text-xs">
               <input
@@ -582,7 +590,6 @@ export function StudioEditorView({
             </div>
           )}
 
-          {/* Code Editor Surface */}
           {activeFile ? (
             <div className="flex-1 flex overflow-auto bg-[var(--surface-canvas)] relative font-mono text-xs min-w-0">
               <div
@@ -608,7 +615,6 @@ export function StudioEditorView({
             </div>
           )}
 
-          {/* Diagnostics Footer */}
           {diagnostics.length > 0 && (
             <div className="border-t bg-[var(--surface-elevated)] p-3 max-h-32 overflow-y-auto space-y-1.5">
               {diagnostics.map((d, i) => (
@@ -642,7 +648,6 @@ export function StudioEditorView({
             <span className="text-[11px] text-[var(--text-muted)] shrink-0">Context Aware</span>
           </div>
 
-          {/* Quick Prompt Chips */}
           <div className="p-3 border-b flex flex-wrap gap-1.5">
             {AI_QUICK_PROMPTS.slice(0, 4).map((q) => (
               <button
@@ -657,12 +662,11 @@ export function StudioEditorView({
             ))}
           </div>
 
-          {/* Messages */}
           <div className="flex-1 overflow-y-auto p-3.5 space-y-3 text-xs">
             {aiMessages.length === 0 && (
               <div className="text-[var(--text-secondary)] space-y-2 py-4">
                 <p>
-                  Ask me to convert scripts between Selenium &amp; Cypress, translate between Java, Python, TypeScript, and JavaScript, improve locators, or diagnose failing assertions.
+                  Ask me to convert scripts across Playwright, Selenium &amp; Cypress, translate between Java, Python, TypeScript, and JavaScript, improve locators, or diagnose failing assertions.
                 </p>
               </div>
             )}
@@ -719,7 +723,6 @@ export function StudioEditorView({
             )}
           </div>
 
-          {/* Prompt Input */}
           <form
             onSubmit={(e) => {
               e.preventDefault();

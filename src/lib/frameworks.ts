@@ -10,24 +10,45 @@ export interface FrameworkOption {
   description: string;
 }
 
+export const LANGUAGE_OPTIONS: {
+  id: ProgrammingLanguage;
+  label: string;
+  badge: string;
+}[] = [
+  { id: 'java', label: 'Java', badge: 'JVM / Maven' },
+  { id: 'javascript', label: 'JavaScript', badge: 'Node.js / ES2022' },
+  { id: 'typescript', label: 'TypeScript', badge: 'Typed Node.js' },
+  { id: 'python', label: 'Python', badge: 'Pytest 3.11+' },
+];
+
+export const TOOL_OPTIONS: {
+  id: TestingTool;
+  label: string;
+  supportedLanguages: ProgrammingLanguage[];
+}[] = [
+  { id: 'playwright', label: 'Playwright', supportedLanguages: ['typescript', 'python'] },
+  { id: 'cypress', label: 'Cypress', supportedLanguages: ['typescript', 'javascript'] },
+  { id: 'selenium', label: 'Selenium WebDriver', supportedLanguages: ['java', 'javascript', 'typescript', 'python'] },
+];
+
 export const FRAMEWORK_OPTIONS: FrameworkOption[] = [
   {
-    id: 'cypress-ts',
-    tool: 'cypress',
+    id: 'playwright-ts',
+    tool: 'playwright',
     language: 'typescript',
-    label: 'Cypress (TypeScript)',
-    shortLabel: 'Cypress · TS',
-    runnerStack: 'Cypress 13 + TypeScript + POM',
-    description: 'Type-safe E2E specs, typed Page Objects, custom commands, and fixtures.',
+    label: 'Playwright (TypeScript)',
+    shortLabel: 'Playwright · TS',
+    runnerStack: 'Playwright + TypeScript + POM',
+    description: 'Modern multi-browser Playwright suite with auto-waiting locators, HTML reports, and mobile presets.',
   },
   {
-    id: 'cypress-js',
-    tool: 'cypress',
-    language: 'javascript',
-    label: 'Cypress (JavaScript)',
-    shortLabel: 'Cypress · JS',
-    runnerStack: 'Cypress 13 + Mocha/Chai + POM',
-    description: 'Modern ES module specs with reusable custom commands and Page Objects.',
+    id: 'playwright-python',
+    tool: 'playwright',
+    language: 'python',
+    label: 'Playwright (Python)',
+    shortLabel: 'Playwright · Py',
+    runnerStack: 'Playwright Sync + Pytest + POM',
+    description: 'Fast Python Playwright tests with pytest fixtures, viewport assertions, and HTML reports.',
   },
   {
     id: 'selenium-java-testng',
@@ -48,6 +69,24 @@ export const FRAMEWORK_OPTIONS: FrameworkOption[] = [
     description: 'Enterprise Maven structure with JUnit Jupiter assertions and screenshot hooks.',
   },
   {
+    id: 'cypress-ts',
+    tool: 'cypress',
+    language: 'typescript',
+    label: 'Cypress (TypeScript)',
+    shortLabel: 'Cypress · TS',
+    runnerStack: 'Cypress 13 + TypeScript + POM',
+    description: 'Type-safe E2E specs, typed Page Objects, custom commands, and fixtures.',
+  },
+  {
+    id: 'cypress-js',
+    tool: 'cypress',
+    language: 'javascript',
+    label: 'Cypress (JavaScript)',
+    shortLabel: 'Cypress · JS',
+    runnerStack: 'Cypress 13 + Mocha/Chai + POM',
+    description: 'Modern ES module specs with reusable custom commands and Page Objects.',
+  },
+  {
     id: 'selenium-python-pytest',
     tool: 'selenium',
     language: 'python',
@@ -55,15 +94,6 @@ export const FRAMEWORK_OPTIONS: FrameworkOption[] = [
     shortLabel: 'Python · Pytest',
     runnerStack: 'Selenium 4 + Pytest + Fixtures',
     description: 'Clean Python POM with conftest fixtures, pytest.ini, and HTML reporting.',
-  },
-  {
-    id: 'selenium-ts',
-    tool: 'selenium',
-    language: 'typescript',
-    label: 'Selenium (TypeScript)',
-    shortLabel: 'Selenium · TS',
-    runnerStack: 'Selenium WebDriver + Mocha/Chai + TS',
-    description: 'Typed WebDriver factory, async explicit waits, and Chai assertions.',
   },
   {
     id: 'selenium-js',
@@ -74,6 +104,15 @@ export const FRAMEWORK_OPTIONS: FrameworkOption[] = [
     runnerStack: 'Selenium WebDriver + Mocha/Chai',
     description: 'Node.js WebDriver suite with modular BasePage and explicit wait helpers.',
   },
+  {
+    id: 'selenium-ts',
+    tool: 'selenium',
+    language: 'typescript',
+    label: 'Selenium (TypeScript)',
+    shortLabel: 'Selenium · TS',
+    runnerStack: 'Selenium WebDriver + Mocha/Chai + TS',
+    description: 'Typed WebDriver factory, async explicit waits, and Chai assertions.',
+  },
 ];
 
 export const APPROACH_OPTIONS: { id: TestingApproach; label: string; summary: string }[] = [
@@ -82,3 +121,7 @@ export const APPROACH_OPTIONS: { id: TestingApproach; label: string; summary: st
   { id: 'bdd-style', label: 'Behavior-Driven', summary: 'Scenario-structured Given/When/Then assertions' },
   { id: 'hybrid', label: 'Hybrid Suite', summary: 'POM + Data-Driven + Reusable utilities' },
 ];
+
+export function getFrameworkMeta(id: AutomationFramework): FrameworkOption {
+  return FRAMEWORK_OPTIONS.find((f) => f.id === id) || FRAMEWORK_OPTIONS[0];
+}

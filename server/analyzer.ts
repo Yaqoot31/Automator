@@ -4,6 +4,8 @@ import type {
   AnalyzedPage,
   DomElementInfo,
   PageArchetype,
+  SkippedPageInfo,
+  UnsupportedElementInfo,
   WebsiteAnalysisReport,
 } from '../src/types/index.js';
 import { createSafeContext, launchIsolatedBrowser } from './browser.js';
@@ -246,6 +248,10 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
       analyzedAt: new Date().toISOString(),
       durationMs: Date.now() - startTime,
       pages: [],
+      discoveredUrls: [targetUrl.toString()],
+      skippedPages: [{ url: targetUrl.toString(), reason: 'Disallowed by site robots.txt (Disallow: /)' }],
+      unsupportedElements: [],
+      coverageScope: 'single-page',
       summary: {
         totalPages: 0,
         totalElements: 0,
@@ -262,10 +268,20 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
   emit('browser', 24, 'Launching isolated headless Chromium browser session...');
   const browser = await launchIsolatedBrowser();
   const visited = new Set<string>();
+  const discoveredUrls = new Set<string>([targetUrl.toString()]);
+  const skippedPages: SkippedPageInfo[] = [];
+  const skippedSet = new Set<string>();
+  const unsupportedElements: UnsupportedElementInfo[] = [];
   const queue: { url: string; depth: number }[] = [{ url: targetUrl.toString(), depth: 0 }];
   const analyzedPages: AnalyzedPage[] = [];
   let rootFinalUrl = targetUrl.toString();
   let rootAntiBot: string | undefined;
+
+  const recordSkip = (url: string, reason: string) => {
+    if (skippedSet.has(url)) return;
+    skippedSet.add(url);
+    skippedPages.push({ url, reason });
+  };
 
   try {
     const context = await createSafeContext(browser, { width: 1440, height: 900 });
@@ -278,11 +294,13 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
 
       const urlCheck = await validatePublicUrl(normUrl);
       if (!urlCheck.valid || !urlCheck.url) {
+        recordSkip(normUrl, urlCheck.error || 'Restricted or unsafe target URL');
         emit('crawl', 30, `Skipped restricted URL: ${normUrl}`, 'warn');
         continue;
       }
 
       if (respectRobots && !isPathAllowedByRobots(urlCheck.url.pathname, robots.disallowedPaths)) {
+        recordSkip(urlCheck.url.toString(), 'Disallowed by robots.txt rule');
         emit('crawl', 35, `Skipped disallowed path per robots.txt: ${urlCheck.url.pathname}`, 'warn');
         continue;
       }
@@ -309,6 +327,7 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
         if (analyzedPages.length === 0) {
           rootFinalUrl = finalUrl;
         }
+        discoveredUrls.add(finalUrl);
         htmlContent = await page.content();
 
         const domSnapshot = await page.evaluate(() => {
@@ -473,6 +492,45 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
           );
           const hasFileUpload = Boolean(document.querySelector('input[type="file"]'));
 
+          // Detect unsupported / manual-only elements on page
+          const unsupported: { category: string; detail: string; manualReason: string }[] = [];
+          const canvases = document.querySelectorAll('canvas').length;
+          if (canvases > 0) {
+            unsupported.push({
+              category: 'HTML5 Canvas / WebGL',
+              detail: `${canvases} <canvas> element(s) detected`,
+              manualReason: 'Pixel-based canvas rendering requires visual/manual verification beyond standard DOM selectors.',
+            });
+          }
+          const iframes = Array.from(document.querySelectorAll('iframe'));
+          const crossOriginIframes = iframes.filter((f) => {
+            const src = f.getAttribute('src') || '';
+            return src.startsWith('http') && !src.startsWith(window.location.origin);
+          });
+          if (crossOriginIframes.length > 0) {
+            unsupported.push({
+              category: 'Cross-Origin Iframe',
+              detail: `${crossOriginIframes.length} third-party <iframe> frame(s) detected`,
+              manualReason: 'Browser same-origin policy blocks automated cross-origin DOM inspection without explicit frame targeting.',
+            });
+          }
+          const mediaPlayers = document.querySelectorAll('video, audio').length;
+          if (mediaPlayers > 0) {
+            unsupported.push({
+              category: 'Media Playback',
+              detail: `${mediaPlayers} audio/video element(s) detected`,
+              manualReason: 'Audio/video codec playback quality and streaming synchronization require manual QA checks.',
+            });
+          }
+          const shadowHosts = Array.from(document.querySelectorAll('*')).filter((el) => Boolean(el.shadowRoot)).length;
+          if (shadowHosts > 0) {
+            unsupported.push({
+              category: 'Closed/Nested Shadow DOM',
+              detail: `${shadowHosts} Web Component shadow root(s) detected`,
+              manualReason: 'Encapsulated shadow DOM trees may require specialized shadow-piercing test review.',
+            });
+          }
+
           const a11yIssues: { severity: 'warning' | 'error'; rule: string; detail: string }[] = [];
           const imgsWithoutAlt = Array.from(document.querySelectorAll('img')).filter(
             (img) => !img.hasAttribute('alt')
@@ -546,6 +604,7 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
             hasLoginForm,
             hasSearchForm,
             hasFileUpload,
+            unsupported,
             rawLinks: Array.from(new Set(rawLinks)).slice(0, 60),
           };
         });
@@ -562,6 +621,26 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
           rootAntiBot = antiBot;
         }
 
+        const parsedFinal = new URL(finalUrl);
+        const pagePath = parsedFinal.pathname || '/';
+
+        for (const u of domSnapshot.unsupported) {
+          unsupportedElements.push({
+            pagePath,
+            category: u.category,
+            detail: u.detail,
+            manualReason: u.manualReason,
+          });
+        }
+        if (antiBot) {
+          unsupportedElements.push({
+            pagePath,
+            category: 'CAPTCHA / Anti-Bot Guard',
+            detail: antiBot,
+            manualReason: 'Human challenge / bot protection prevents automated submission and requires manual QA or staging bypass token.',
+          });
+        }
+
         const internalLinks: string[] = [];
         for (const href of domSnapshot.rawLinks) {
           try {
@@ -572,8 +651,13 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
             if (sameHost || subdomainMatch) {
               const clean = `${parsed.origin}${parsed.pathname}${parsed.search}`;
               internalLinks.push(clean);
-              if (next.depth + 1 <= maxDepth && !visited.has(clean) && queue.length < maxPages * 3) {
-                queue.push({ url: clean, depth: next.depth + 1 });
+              discoveredUrls.add(clean);
+              if (next.depth + 1 <= maxDepth) {
+                if (!visited.has(clean) && queue.length < maxPages * 3) {
+                  queue.push({ url: clean, depth: next.depth + 1 });
+                }
+              } else if (!visited.has(clean)) {
+                recordSkip(clean, `Exceeded max crawl depth (${maxDepth})`);
               }
             }
           } catch {
@@ -586,11 +670,10 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
             ? await checkBrokenLinksSample(internalLinks, targetUrl.origin)
             : [];
 
-        const parsedFinal = new URL(finalUrl);
         const analyzedPage: AnalyzedPage = {
           id: crypto.randomUUID(),
           url: finalUrl,
-          path: parsedFinal.pathname || '/',
+          path: pagePath,
           title: domSnapshot.title,
           statusCode,
           loadTimeMs,
@@ -700,15 +783,25 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
           const fallbackReason = err instanceof Error ? err.message : String(err);
           emit('crawl', 80, `Analyzed ${fallbackPage.path} via static HTTP inspection (${fallbackReason}).`, 'warn', fallbackPage);
         } catch (fallbackErr) {
+          const reason = err instanceof Error ? err.message : String(fallbackErr);
+          recordSkip(urlCheck.url.toString(), `Navigation failed: ${reason}`);
           emit(
             'crawl',
             pct,
-            `Failed to load ${urlCheck.url.pathname}: ${err instanceof Error ? err.message : String(fallbackErr)}`,
+            `Failed to load ${urlCheck.url.pathname}: ${reason}`,
             'error'
           );
         }
       } finally {
         await page.close().catch(() => {});
+      }
+    }
+
+    // Any URLs remaining in queue were discovered but skipped due to maxPages limit
+    for (const rem of queue) {
+      const norm = rem.url.split('#')[0];
+      if (!visited.has(norm)) {
+        recordSkip(norm, `Stopped after reaching max crawl limit (${maxPages} page(s))`);
       }
     }
 
@@ -744,6 +837,13 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
     (p) => !p.responsiveCheck.desktopOverflow && !p.responsiveCheck.mobileOverflow
   );
 
+  const coverageScope: WebsiteAnalysisReport['coverageScope'] =
+    analyzedPages.length <= 1
+      ? 'single-page'
+      : skippedPages.length > 0
+        ? 'partial-crawl'
+        : 'full-discovered';
+
   const report: WebsiteAnalysisReport = {
     id: crypto.randomUUID(),
     url: targetUrl.toString(),
@@ -755,6 +855,10 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
     analyzedAt: new Date().toISOString(),
     durationMs: Date.now() - startTime,
     pages: analyzedPages,
+    discoveredUrls: Array.from(discoveredUrls),
+    skippedPages,
+    unsupportedElements,
+    coverageScope,
     summary: {
       totalPages: analyzedPages.length,
       totalElements,
@@ -767,6 +871,6 @@ export async function analyzeWebsite(options: AnalyzeWebsiteOptions): Promise<We
     },
   };
 
-  emit('complete', 100, `Analysis complete: ${analyzedPages.length} page(s), ${totalElements} elements mapped.`, 'success');
+  emit('complete', 100, `Analysis complete: ${analyzedPages.length} inspected (${discoveredUrls.size} discovered, ${skippedPages.length} skipped), ${totalElements} elements mapped.`, 'success');
   return report;
 }

@@ -1,36 +1,60 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Loader2, ShieldAlert } from 'lucide-react';
 import type {
   AppSettings,
   AutomationFramework,
   AutomationProject,
   ProjectConfig,
   ProjectFile,
+  SqaDefect,
+  SqaRelease,
+  SqaRequirement,
+  SqaTestPlan,
+  SqaTestSuite,
   TestCase,
   TestRunItemResult,
   TestRunLogEntry,
   TestRunRecord,
   TestingApproach,
   UserProfile,
+  UserRole,
   WorkspaceView,
 } from '@/types';
 import {
+  addProjectMemberApi,
   analyzeWebsiteApi,
   cancelTestRunApi,
   createProjectApi,
   deleteProjectApi,
+  deleteSqaDefectApi,
+  deleteSqaPlanApi,
+  deleteSqaReleaseApi,
+  deleteSqaRequirementApi,
+  deleteSqaSuiteApi,
   duplicateProjectApi,
   enhanceAiTestsApi,
+  getSessionApi,
+  getSqaOverviewApi,
   listProjectsApi,
   listTestRunsApi,
+  logoutApi,
   regenerateProjectApi,
+  removeProjectMemberApi,
   saveProjectSecretsApi,
+  saveSqaDefectApi,
+  saveSqaPlanApi,
+  saveSqaReleaseApi,
+  saveSqaRequirementApi,
+  saveSqaSuiteApi,
   startTestRunApi,
   updateProjectApi,
 } from '@/lib/api';
 import { AuthGate } from '@/components/AuthGate';
 import { TopNavAndSidebar } from '@/components/TopNavAndSidebar';
+import { AnalyticsDashboardView } from '@/views/AnalyticsDashboardView';
 import { AnalyzerView, type LiveAnalysisLog } from '@/views/AnalyzerView';
 import { TestCasesView } from '@/views/TestCasesView';
+import { SqaView, type SqaTab } from '@/views/SqaView';
 import { StudioEditorView } from '@/views/StudioEditorView';
 import { RunnerView } from '@/views/RunnerView';
 import { ReportsView } from '@/views/ReportsView';
@@ -44,7 +68,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   accent: 'amber',
   density: 'comfortable',
   reducedMotion: false,
-  defaultFramework: 'cypress-ts',
+  defaultFramework: 'playwright-ts',
   sidebarCollapsed: false,
   fontScale: 100,
 };
@@ -63,12 +87,22 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [hydratingSession, setHydratingSession] = useState(true);
 
-  const [activeView, setActiveView] = useState<WorkspaceView>('analyzer');
+  const [activeView, setActiveView] = useState<WorkspaceView>('dashboard');
   const [projects, setProjects] = useState<AutomationProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [runs, setRuns] = useState<TestRunRecord[]>([]);
   const [activeRun, setActiveRun] = useState<TestRunRecord | null>(null);
+
+  // SQA State
+  const [sqaPlans, setSqaPlans] = useState<SqaTestPlan[]>([]);
+  const [sqaSuites, setSqaSuites] = useState<SqaTestSuite[]>([]);
+  const [sqaDefects, setSqaDefects] = useState<SqaDefect[]>([]);
+  const [sqaRequirements, setSqaRequirements] = useState<SqaRequirement[]>([]);
+  const [sqaReleases, setSqaReleases] = useState<SqaRelease[]>([]);
+  const [sqaInitialTab, setSqaInitialTab] = useState<SqaTab>('plan');
+  const [prefillDefectCase, setPrefillDefectCase] = useState<TestCase | null>(null);
 
   // Analysis live state
   const [analyzing, setAnalyzing] = useState(false);
@@ -113,17 +147,44 @@ export default function App() {
   }, []);
 
   const refreshWorkspaceData = useCallback(async (authToken: string) => {
-    const [projRes, runsRes] = await Promise.all([
+    const [projRes, runsRes, sqaRes] = await Promise.all([
       listProjectsApi(authToken),
       listTestRunsApi(authToken),
+      getSqaOverviewApi(authToken),
     ]);
     setProjects(projRes.projects);
     setRuns(runsRes.runs);
+    setSqaPlans(sqaRes.plans);
+    setSqaSuites(sqaRes.suites);
+    setSqaDefects(sqaRes.defects);
+    setSqaRequirements(sqaRes.requirements);
+    setSqaReleases(sqaRes.releases);
     setActiveProjectId((prev) => {
       if (prev && projRes.projects.some((p) => p.id === prev)) return prev;
       return projRes.projects[0]?.id || null;
     });
   }, []);
+
+  // Restore HttpOnly cookie session on initial load
+  useEffect(() => {
+    let mounted = true;
+    getSessionApi()
+      .then((res) => {
+        if (!mounted) return;
+        if (res.user && res.token) {
+          setUser(res.user);
+          setToken(res.token);
+          refreshWorkspaceData(res.token).catch(() => {});
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setHydratingSession(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [refreshWorkspaceData]);
 
   // Real-time WebSocket subscription for analysis & test execution
   useEffect(() => {
@@ -206,6 +267,7 @@ export default function App() {
   const handleRunAnalysis = async (params: {
     url: string;
     framework: AutomationFramework;
+    selectedFrameworks: AutomationFramework[];
     approach: TestingApproach;
     maxPages: number;
     maxDepth: number;
@@ -222,7 +284,11 @@ export default function App() {
 
     try {
       const { analysis, testCases } = await analyzeWebsiteApi(token, {
-        ...params,
+        url: params.url,
+        maxPages: params.maxPages,
+        maxDepth: params.maxDepth,
+        respectRobots: params.respectRobots,
+        followSubdomains: params.followSubdomains,
         jobId,
       });
 
@@ -238,6 +304,7 @@ export default function App() {
         name: `${hostName} Automation`,
         url: analysis.url,
         framework: params.framework,
+        selectedFrameworks: params.selectedFrameworks,
         approach: params.approach,
         analysis,
         testCases,
@@ -258,6 +325,15 @@ export default function App() {
     upsertProjectInState(res.project);
   };
 
+  const handleUpdateProjectPatch = async (
+    projectId: string,
+    patch: Partial<AutomationProject>
+  ) => {
+    if (!token) return;
+    const res = await updateProjectApi(token, projectId, patch);
+    upsertProjectInState(res.project);
+  };
+
   const handleSaveFiles = async (files: ProjectFile[]) => {
     if (!token || !activeProject) return;
     const res = await updateProjectApi(token, activeProject.id, { files });
@@ -266,10 +342,17 @@ export default function App() {
 
   const handleRegenerate = async (
     framework: AutomationFramework,
-    approach: TestingApproach
+    approach: TestingApproach,
+    selectedFrameworks?: AutomationFramework[]
   ) => {
     if (!token || !activeProject) return;
-    const res = await regenerateProjectApi(token, activeProject.id, framework, approach);
+    const res = await regenerateProjectApi(
+      token,
+      activeProject.id,
+      framework,
+      approach,
+      selectedFrameworks
+    );
     upsertProjectInState(res.project);
   };
 
@@ -297,14 +380,59 @@ export default function App() {
     upsertProjectInState(res.project);
   };
 
-  const handleSignOut = () => {
+  const handleLogDefectFromCase = (tc: TestCase) => {
+    setPrefillDefectCase(tc);
+    setSqaInitialTab('defects');
+    setActiveView('sqa');
+  };
+
+  const handleLogDefectFromRunResult = (result: TestRunItemResult) => {
+    const matched = activeProject?.testCases.find((t) => t.id === result.testCaseId);
+    const syntheticCase: TestCase = matched
+      ? { ...matched, actualResult: result.actualResult }
+      : {
+          id: result.testCaseId,
+          code: result.code,
+          title: result.title,
+          category: result.category,
+          scenarioType: 'positive',
+          pagePath: '/',
+          scenario: result.title,
+          preconditions: '',
+          steps: [],
+          expectedResult: 'Assertions pass cleanly',
+          actualResult: result.actualResult,
+          status: 'failed',
+          enabled: true,
+        };
+    handleLogDefectFromCase(syntheticCase);
+  };
+
+  const handleSignOut = async () => {
+    await logoutApi(token).catch(() => {});
     setUser(null);
     setToken(null);
     setProjects([]);
     setRuns([]);
+    setSqaPlans([]);
+    setSqaSuites([]);
+    setSqaDefects([]);
+    setSqaRequirements([]);
+    setSqaReleases([]);
     setActiveProjectId(null);
     setActiveRun(null);
   };
+
+  if (hydratingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[var(--surface-canvas)] text-[var(--text-main)]">
+        <div className="flex items-center gap-3 text-sm text-[var(--text-secondary)]">
+          <Loader2 className="w-5 h-5 animate-spin text-[var(--accent-primary)]" />
+          <span>Restoring secure workspace session...</span>
+        </div>
+      </div>
+    );
+  }
 
   if (!user || !token) {
     return (
@@ -314,6 +442,7 @@ export default function App() {
         onAuthenticated={(u, t) => {
           setUser(u);
           setToken(t);
+          setActiveView('dashboard');
           refreshWorkspaceData(t).catch(() => {});
         }}
       />
@@ -321,6 +450,7 @@ export default function App() {
   }
 
   const isRunning = activeRun?.status === 'running' || activeRun?.status === 'queued';
+  const openDefectCount = sqaDefects.filter((d) => d.status !== 'Closed').length;
   const densityPadding =
     settings.density === 'compact'
       ? 'py-2'
@@ -329,17 +459,19 @@ export default function App() {
         : 'py-4';
 
   const viewTitles: Record<WorkspaceView, string> = {
-    analyzer: 'AI Website Analyzer',
-    tests: 'Test Cases & Coverage',
+    dashboard: 'Executive Analytics Dashboard',
+    analyzer: 'Website URL Analyzer',
+    tests: 'Test Cases & Google Sheets',
+    sqa: 'SQA Lifecycle Management',
     studio: 'Script Studio & IDE',
     runner: 'Live Test Runner',
-    reports: 'Reports & Analytics',
-    projects: 'Projects & Credentials Vault',
-    settings: 'Platform Settings',
+    reports: 'Reports & Export Center',
+    projects: 'Projects, Team & Vault',
+    settings: 'Profile & Platform Settings',
   };
 
   return (
-    <div className="min-h-screen bg-[var(--surface-canvas)] text-[var(--text-main)] flex flex-col">
+    <div className="min-h-screen text-[var(--text-main)] flex flex-col">
       <TopNavAndSidebar
         activeView={activeView}
         onNavigate={(v) => {
@@ -356,12 +488,13 @@ export default function App() {
         onSignOut={handleSignOut}
         activeProjectName={activeProject?.name}
         testCount={activeProject?.testCases.length || 0}
+        openDefectCount={openDefectCount}
         isRunning={isRunning}
       />
 
       <div
-        className={`flex-1 flex flex-col min-w-0 pt-14 lg:pt-16 transition-all duration-200 ${
-          settings.sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[240px]'
+        className={`flex-1 flex flex-col min-w-0 pt-[52px] lg:pt-16 pb-mobile-nav transition-all duration-200 ${
+          settings.sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[244px]'
         }`}
       >
         {/* Contextual Breadcrumb Sub-bar */}
@@ -378,13 +511,48 @@ export default function App() {
               <div className="hidden sm:flex items-center gap-3 font-mono text-[11px] text-[var(--text-muted)] min-w-0">
                 <span className="truncate max-w-[260px]">{activeProject.url}</span>
                 <span aria-hidden="true">·</span>
-                <span className="shrink-0">{activeProject.framework}</span>
+                <span className="shrink-0">
+                  {activeProject.selectedFrameworks?.join(', ') || activeProject.framework}
+                </span>
               </div>
             )}
           </div>
         </div>
 
+        {/* Unverified Email Banner */}
+        {!user.emailVerified && (
+          <div className="border-b bg-amber-500/10 px-4 sm:px-6 lg:px-8 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-[var(--status-warning)]">
+              <ShieldAlert className="w-4 h-4 shrink-0" />
+              <span>
+                Email verification pending for <span className="font-mono">{user.email}</span>.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveView('settings')}
+              className="font-semibold underline text-[var(--text-main)]"
+            >
+              Verify Email in Settings
+            </button>
+          </div>
+        )}
+
         <main className={`flex-1 min-w-0 ${densityPadding}`}>
+          {activeView === 'dashboard' && (
+            <AnalyticsDashboardView
+              userName={user.name}
+              projects={projects}
+              runs={runs}
+              plans={sqaPlans}
+              suites={sqaSuites}
+              defects={sqaDefects}
+              requirements={sqaRequirements}
+              releases={sqaReleases}
+              onNavigate={setActiveView}
+            />
+          )}
+
           {activeView === 'analyzer' && (
             <AnalyzerView
               project={activeProject}
@@ -402,8 +570,74 @@ export default function App() {
             <TestCasesView
               project={activeProject}
               onUpdateTestCases={handleUpdateTestCases}
+              onUpdateProjectSheet={handleUpdateProjectPatch}
               onRunTests={handleStartRun}
               onEnhanceWithAi={handleEnhanceWithAi}
+              onLogDefectFromCase={handleLogDefectFromCase}
+              onNavigate={setActiveView}
+            />
+          )}
+
+          {activeView === 'sqa' && (
+            <SqaView
+              key={prefillDefectCase ? `prefill-${prefillDefectCase.id}` : 'sqa-default'}
+              project={activeProject}
+              userName={user.name}
+              plans={sqaPlans}
+              suites={sqaSuites}
+              defects={sqaDefects}
+              requirements={sqaRequirements}
+              releases={sqaReleases}
+              initialTab={sqaInitialTab}
+              prefillDefectFromCase={prefillDefectCase}
+              onSavePlan={async (plan) => {
+                const res = await saveSqaPlanApi(token, plan);
+                setSqaPlans((prev) => [res.plan, ...prev.filter((p) => p.id !== res.plan.id)]);
+              }}
+              onDeletePlan={async (id) => {
+                await deleteSqaPlanApi(token, id);
+                setSqaPlans((prev) => prev.filter((p) => p.id !== id));
+              }}
+              onSaveSuite={async (suite) => {
+                const res = await saveSqaSuiteApi(token, suite);
+                setSqaSuites((prev) => [res.suite, ...prev.filter((s) => s.id !== res.suite.id)]);
+              }}
+              onDeleteSuite={async (id) => {
+                await deleteSqaSuiteApi(token, id);
+                setSqaSuites((prev) => prev.filter((s) => s.id !== id));
+              }}
+              onSaveDefect={async (defect) => {
+                const res = await saveSqaDefectApi(token, defect);
+                setSqaDefects((prev) => [res.defect, ...prev.filter((d) => d.id !== res.defect.id)]);
+                setPrefillDefectCase(null);
+              }}
+              onDeleteDefect={async (id) => {
+                await deleteSqaDefectApi(token, id);
+                setSqaDefects((prev) => prev.filter((d) => d.id !== id));
+              }}
+              onSaveRequirement={async (req) => {
+                const res = await saveSqaRequirementApi(token, req);
+                setSqaRequirements((prev) => [
+                  res.requirement,
+                  ...prev.filter((r) => r.id !== res.requirement.id),
+                ]);
+              }}
+              onDeleteRequirement={async (id) => {
+                await deleteSqaRequirementApi(token, id);
+                setSqaRequirements((prev) => prev.filter((r) => r.id !== id));
+              }}
+              onSaveRelease={async (rel) => {
+                const res = await saveSqaReleaseApi(token, rel);
+                setSqaReleases((prev) => [
+                  res.release,
+                  ...prev.filter((r) => r.id !== res.release.id),
+                ]);
+              }}
+              onDeleteRelease={async (id) => {
+                await deleteSqaReleaseApi(token, id);
+                setSqaReleases((prev) => prev.filter((r) => r.id !== id));
+              }}
+              onUpdateTestCases={handleUpdateTestCases}
               onNavigate={setActiveView}
             />
           )}
@@ -429,6 +663,7 @@ export default function App() {
               onSaveConfig={handleSaveConfig}
               onStartRun={handleStartRun}
               onCancelRun={handleCancelRun}
+              onLogBugFromResult={handleLogDefectFromRunResult}
               onNavigate={setActiveView}
             />
           )}
@@ -438,6 +673,8 @@ export default function App() {
               token={token}
               projects={projects}
               runs={runs}
+              defects={sqaDefects}
+              requirements={sqaRequirements}
               onNavigate={setActiveView}
             />
           )}
@@ -476,14 +713,24 @@ export default function App() {
                 const res = await saveProjectSecretsApi(token, id, secrets);
                 upsertProjectInState(res.project);
               }}
+              onAddTeamMember={async (id, payload: { email: string; name?: string; role: UserRole }) => {
+                const res = await addProjectMemberApi(token, id, payload);
+                upsertProjectInState(res.project);
+              }}
+              onRemoveTeamMember={async (id, memberId) => {
+                const res = await removeProjectMemberApi(token, id, memberId);
+                upsertProjectInState(res.project);
+              }}
               onNavigate={setActiveView}
             />
           )}
 
           {activeView === 'settings' && (
             <SettingsView
+              token={token}
               settings={settings}
               user={user}
+              onUserUpdated={setUser}
               onUpdateSettings={updateSettings}
               onResetSettings={() => setSettings(DEFAULT_SETTINGS)}
             />
@@ -492,8 +739,8 @@ export default function App() {
 
         <footer className="border-t py-4 px-4 sm:px-6 lg:px-8 text-xs text-[var(--text-muted)]">
           <div className="max-w-[1440px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
-            <span>Automator AI — Website Automation Engineering Platform</span>
-            <span>Selenium &amp; Cypress · Java · JavaScript · TypeScript · Python</span>
+            <span>Automator AI — Website Automation, SQA &amp; Analytics Platform</span>
+            <span>Playwright · Cypress · Selenium · Java · JavaScript · TypeScript · Python</span>
           </div>
         </footer>
       </div>

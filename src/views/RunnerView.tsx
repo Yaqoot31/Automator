@@ -9,11 +9,13 @@ import {
   Globe,
   X,
   SlidersHorizontal,
+  Bug,
 } from 'lucide-react';
 import type {
   AutomationProject,
   BrowserTarget,
   ProjectConfig,
+  TestRunItemResult,
   TestRunRecord,
   ViewportPreset,
   WorkspaceView,
@@ -28,6 +30,7 @@ interface RunnerViewProps {
   onSaveConfig: (config: ProjectConfig) => Promise<void>;
   onStartRun: (testCaseIds?: string[]) => Promise<void>;
   onCancelRun: (runId: string) => Promise<void>;
+  onLogBugFromResult?: (result: TestRunItemResult) => void;
   onNavigate: (view: WorkspaceView) => void;
 }
 
@@ -39,6 +42,7 @@ export function RunnerView({
   onSaveConfig,
   onStartRun,
   onCancelRun,
+  onLogBugFromResult,
   onNavigate,
 }: RunnerViewProps) {
   const [draftConfig, setDraftConfig] = useState<{ projectId: string; cfg: ProjectConfig } | null>(null);
@@ -121,7 +125,7 @@ export function RunnerView({
       : 0;
 
   return (
-    <div className="max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6">
+    <div className="max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6 animate-view-enter">
       {/* Execution Header */}
       <div className="surface-panel rounded-2xl p-4 sm:p-6 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -130,7 +134,7 @@ export function RunnerView({
               Live Isolated Test Runner
             </h1>
             <p className="text-xs sm:text-sm text-[var(--text-secondary)] mt-1 leading-relaxed">
-              Executes tests inside a sandboxed Playwright browser context with network filtering and automatic failure screenshot capture.
+              Executes supported scenarios inside a sandboxed Playwright browser context with network filtering and failure screenshot capture.
             </p>
           </div>
 
@@ -305,7 +309,6 @@ export function RunnerView({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
-            {/* Test Results Table */}
             <div className="lg:col-span-7 surface-panel rounded-xl overflow-hidden min-w-0">
               <div className="px-4 py-3 border-b text-xs font-semibold text-[var(--text-secondary)]">
                 Executed Test Cases
@@ -337,6 +340,16 @@ export function RunnerView({
                       <span className="font-mono text-[var(--text-muted)] tabular-nums">
                         {r.durationMs}ms
                       </span>
+                      {r.status === 'failed' && onLogBugFromResult && (
+                        <button
+                          type="button"
+                          onClick={() => onLogBugFromResult(r)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-500/15 text-red-400 font-semibold min-h-[36px]"
+                        >
+                          <Bug className="w-3.5 h-3.5" />
+                          <span>Log Bug</span>
+                        </button>
+                      )}
                       {r.screenshotUrl && (
                         <button
                           type="button"
@@ -358,7 +371,6 @@ export function RunnerView({
               </div>
             </div>
 
-            {/* Live Execution Log Console */}
             <div className="lg:col-span-5 surface-panel rounded-xl overflow-hidden flex flex-col min-w-0">
               <div className="px-4 py-3 border-b text-xs font-semibold text-[var(--text-secondary)]">
                 Execution Console Stream
@@ -386,7 +398,6 @@ export function RunnerView({
         </div>
       )}
 
-      {/* Failure Screenshot Modal */}
       {screenshotModalUrl && (
         <div
           className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"

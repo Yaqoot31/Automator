@@ -8,12 +8,19 @@ import type {
   ProjectConfig,
   ProjectFile,
   ProjectSecretMeta,
+  ProjectTeamMember,
   ProgrammingLanguage,
+  SqaDefect,
+  SqaRelease,
+  SqaRequirement,
+  SqaTestPlan,
+  SqaTestSuite,
   TestCase,
   TestRunRecord,
   TestingApproach,
   TestingTool,
   UserProfile,
+  UserRole,
   WebsiteAnalysisReport,
 } from '../src/types/index.js';
 import { decryptSecrets, encryptSecrets, maskSecretValue } from './security.js';
@@ -38,6 +45,14 @@ function persistDb() {
   fs.renameSync(tmpPath, DB_PATH);
 }
 
+function safeAddColumn(db: Database, sql: string) {
+  try {
+    db.run(sql);
+  } catch {
+    // Column already exists
+  }
+}
+
 export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
   ensureDirs();
@@ -54,10 +69,28 @@ export async function getDb(): Promise<Database> {
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
       name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'engineer',
+      role TEXT NOT NULL DEFAULT 'sqa_engineer',
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      job_title TEXT NOT NULL DEFAULT '',
+      organization TEXT NOT NULL DEFAULT '',
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+      jti TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS projects (
@@ -69,12 +102,18 @@ export async function getDb(): Promise<Database> {
       tool TEXT NOT NULL,
       language TEXT NOT NULL,
       framework TEXT NOT NULL,
+      selected_frameworks_json TEXT NOT NULL DEFAULT '[]',
       approach TEXT NOT NULL DEFAULT 'pom',
       analysis_json TEXT,
       test_cases_json TEXT NOT NULL DEFAULT '[]',
       files_json TEXT NOT NULL DEFAULT '[]',
       config_json TEXT NOT NULL,
       secrets_enc TEXT NOT NULL DEFAULT '',
+      team_members_json TEXT NOT NULL DEFAULT '[]',
+      google_sheet_id TEXT NOT NULL DEFAULT '',
+      google_sheet_url TEXT NOT NULL DEFAULT '',
+      google_sheet_title TEXT NOT NULL DEFAULT '',
+      google_sheet_last_sync TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -106,7 +145,105 @@ export async function getDb(): Promise<Database> {
       messages_json TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sqa_plans (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      strategy TEXT NOT NULL DEFAULT '',
+      scope TEXT NOT NULL DEFAULT '',
+      objectives TEXT NOT NULL DEFAULT '',
+      resources TEXT NOT NULL DEFAULT '',
+      schedule_start TEXT NOT NULL DEFAULT '',
+      schedule_end TEXT NOT NULL DEFAULT '',
+      release_target TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'Draft',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sqa_suites (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      suite_type TEXT NOT NULL DEFAULT 'Regression',
+      description TEXT NOT NULL DEFAULT '',
+      test_case_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sqa_defects (
+      id TEXT PRIMARY KEY,
+      bug_code TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      steps_to_reproduce TEXT NOT NULL DEFAULT '',
+      expected_result TEXT NOT NULL DEFAULT '',
+      actual_result TEXT NOT NULL DEFAULT '',
+      severity TEXT NOT NULL DEFAULT 'Major',
+      priority TEXT NOT NULL DEFAULT 'High',
+      assigned_developer TEXT NOT NULL DEFAULT '',
+      reported_by TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'New',
+      linked_test_case_id TEXT NOT NULL DEFAULT '',
+      linked_requirement_id TEXT NOT NULL DEFAULT '',
+      screenshot_url TEXT NOT NULL DEFAULT '',
+      attachment_name TEXT NOT NULL DEFAULT '',
+      resolution_notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sqa_requirements (
+      id TEXT PRIMARY KEY,
+      req_code TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'Functional',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      module TEXT NOT NULL DEFAULT '',
+      priority TEXT NOT NULL DEFAULT 'High',
+      linked_test_case_ids_json TEXT NOT NULL DEFAULT '[]',
+      linked_defect_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sqa_releases (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      name TEXT NOT NULL,
+      build_number TEXT NOT NULL DEFAULT '',
+      environment TEXT NOT NULL DEFAULT 'staging',
+      target_date TEXT NOT NULL DEFAULT '',
+      build_verified INTEGER NOT NULL DEFAULT 0,
+      readiness_status TEXT NOT NULL DEFAULT 'Pending',
+      approval_status TEXT NOT NULL DEFAULT 'Pending',
+      approved_by TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  // Backward-compatible migrations for existing databases
+  safeAddColumn(dbInstance, 'ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0');
+  safeAddColumn(dbInstance, "ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT ''");
+  safeAddColumn(dbInstance, "ALTER TABLE users ADD COLUMN organization TEXT NOT NULL DEFAULT ''");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN selected_frameworks_json TEXT NOT NULL DEFAULT '[]'");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN team_members_json TEXT NOT NULL DEFAULT '[]'");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN google_sheet_id TEXT NOT NULL DEFAULT ''");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN google_sheet_url TEXT NOT NULL DEFAULT ''");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN google_sheet_title TEXT NOT NULL DEFAULT ''");
+  safeAddColumn(dbInstance, "ALTER TABLE projects ADD COLUMN google_sheet_last_sync TEXT NOT NULL DEFAULT ''");
 
   persistDb();
   return dbInstance;
@@ -146,7 +283,10 @@ export async function findUserByEmail(email: string): Promise<{
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'engineer';
+  role: UserRole;
+  emailVerified: boolean;
+  jobTitle: string;
+  organization: string;
   passwordHash: string;
   passwordSalt: string;
   createdAt: string;
@@ -156,7 +296,10 @@ export async function findUserByEmail(email: string): Promise<{
     id: string;
     email: string;
     name: string;
-    role: 'admin' | 'engineer';
+    role: string;
+    email_verified: number;
+    job_title: string;
+    organization: string;
     password_hash: string;
     password_salt: string;
     created_at: string;
@@ -166,7 +309,10 @@ export async function findUserByEmail(email: string): Promise<{
     id: row.id,
     email: row.email,
     name: row.name,
-    role: row.role,
+    role: (row.role as UserRole) || 'sqa_engineer',
+    emailVerified: Boolean(row.email_verified),
+    jobTitle: row.job_title || '',
+    organization: row.organization || '',
     passwordHash: row.password_hash,
     passwordSalt: row.password_salt,
     createdAt: row.created_at,
@@ -179,15 +325,25 @@ export async function findUserById(id: string): Promise<UserProfile | null> {
     id: string;
     email: string;
     name: string;
-    role: 'admin' | 'engineer';
+    role: string;
+    email_verified: number;
+    job_title: string;
+    organization: string;
     created_at: string;
-  }>(db, 'SELECT id, email, name, role, created_at FROM users WHERE id = ?', [id]);
+  }>(
+    db,
+    'SELECT id, email, name, role, email_verified, job_title, organization, created_at FROM users WHERE id = ?',
+    [id]
+  );
   if (!row) return null;
   return {
     id: row.id,
     email: row.email,
     name: row.name,
-    role: row.role,
+    role: (row.role as UserRole) || 'sqa_engineer',
+    emailVerified: Boolean(row.email_verified),
+    jobTitle: row.job_title || '',
+    organization: row.organization || '',
     createdAt: row.created_at,
   };
 }
@@ -196,15 +352,15 @@ export async function createUser(input: {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'engineer';
+  role: UserRole;
   passwordHash: string;
   passwordSalt: string;
 }): Promise<UserProfile> {
   const db = await getDb();
   const createdAt = new Date().toISOString();
   db.run(
-    `INSERT INTO users (id, email, name, role, password_hash, password_salt, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (id, email, name, role, email_verified, job_title, organization, password_hash, password_salt, created_at)
+     VALUES (?, ?, ?, ?, 0, '', '', ?, ?, ?)`,
     [input.id, input.email, input.name, input.role, input.passwordHash, input.passwordSalt, createdAt]
   );
   persistDb();
@@ -213,8 +369,115 @@ export async function createUser(input: {
     email: input.email,
     name: input.name,
     role: input.role,
+    emailVerified: false,
+    jobTitle: '',
+    organization: '',
     createdAt,
   };
+}
+
+export async function updateUserProfile(
+  userId: string,
+  patch: { name?: string; role?: UserRole; jobTitle?: string; organization?: string }
+): Promise<UserProfile | null> {
+  const db = await getDb();
+  const current = await findUserById(userId);
+  if (!current) return null;
+  db.run(
+    `UPDATE users SET name = ?, role = ?, job_title = ?, organization = ? WHERE id = ?`,
+    [
+      patch.name ?? current.name,
+      patch.role ?? current.role,
+      patch.jobTitle ?? current.jobTitle ?? '',
+      patch.organization ?? current.organization ?? '',
+      userId,
+    ]
+  );
+  persistDb();
+  return findUserById(userId);
+}
+
+export async function markUserEmailVerified(userId: string): Promise<UserProfile | null> {
+  const db = await getDb();
+  db.run('UPDATE users SET email_verified = 1 WHERE id = ?', [userId]);
+  persistDb();
+  return findUserById(userId);
+}
+
+export async function updateUserPassword(
+  userId: string,
+  passwordHash: string,
+  passwordSalt: string
+): Promise<void> {
+  const db = await getDb();
+  db.run('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', [
+    passwordHash,
+    passwordSalt,
+    userId,
+  ]);
+  persistDb();
+}
+
+export async function createAuthOneTimeToken(input: {
+  id: string;
+  userId: string;
+  purpose: 'email_verify' | 'password_reset';
+  tokenHash: string;
+  expiresAt: number;
+}): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM auth_tokens WHERE user_id = ? AND purpose = ? AND used_at IS NULL', [
+    input.userId,
+    input.purpose,
+  ]);
+  db.run(
+    `INSERT INTO auth_tokens (id, user_id, purpose, token_hash, expires_at, used_at, created_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+    [input.id, input.userId, input.purpose, input.tokenHash, input.expiresAt, new Date().toISOString()]
+  );
+  persistDb();
+}
+
+export async function consumeAuthOneTimeToken(
+  userId: string,
+  purpose: 'email_verify' | 'password_reset',
+  tokenHash: string
+): Promise<boolean> {
+  const db = await getDb();
+  const row = queryOne<{ id: string; expires_at: number }>(
+    db,
+    `SELECT id, expires_at FROM auth_tokens
+     WHERE user_id = ? AND purpose = ? AND token_hash = ? AND used_at IS NULL`,
+    [userId, purpose, tokenHash]
+  );
+  if (!row || row.expires_at < Date.now()) {
+    return false;
+  }
+  db.run('UPDATE auth_tokens SET used_at = ? WHERE id = ?', [new Date().toISOString(), row.id]);
+  persistDb();
+  return true;
+}
+
+export async function revokeSessionToken(jti: string, expiresAt: number): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM revoked_tokens WHERE expires_at < ?', [Date.now()]);
+  db.run('INSERT OR REPLACE INTO revoked_tokens (jti, expires_at) VALUES (?, ?)', [jti, expiresAt]);
+  persistDb();
+}
+
+export async function isTokenRevoked(jti: string): Promise<boolean> {
+  const db = await getDb();
+  const row = queryOne<{ jti: string }>(db, 'SELECT jti FROM revoked_tokens WHERE jti = ?', [jti]);
+  return Boolean(row);
+}
+
+function safeJsonParse<T>(raw: unknown, fallback: T): T {
+  try {
+    if (typeof raw !== 'string' || !raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function rowToProject(row: Record<string, unknown>): AutomationProject {
@@ -226,6 +489,9 @@ function rowToProject(row: Record<string, unknown>): AutomationProject {
     updatedAt: String(row.updated_at),
   }));
 
+  const framework = row.framework as AutomationFramework;
+  const parsedSelected = safeJsonParse<AutomationFramework[]>(row.selected_frameworks_json, []);
+
   return {
     id: String(row.id),
     userId: String(row.user_id),
@@ -234,28 +500,73 @@ function rowToProject(row: Record<string, unknown>): AutomationProject {
     url: String(row.url),
     tool: row.tool as TestingTool,
     language: row.language as ProgrammingLanguage,
-    framework: row.framework as AutomationFramework,
+    framework,
+    selectedFrameworks: parsedSelected.length > 0 ? parsedSelected : [framework],
     approach: (row.approach as TestingApproach) || 'pom',
     analysis: row.analysis_json
-      ? (JSON.parse(String(row.analysis_json)) as WebsiteAnalysisReport)
+      ? safeJsonParse<WebsiteAnalysisReport | null>(row.analysis_json, null)
       : null,
-    testCases: JSON.parse(String(row.test_cases_json || '[]')) as TestCase[],
-    files: JSON.parse(String(row.files_json || '[]')) as ProjectFile[],
-    config: JSON.parse(String(row.config_json)) as ProjectConfig,
+    testCases: safeJsonParse<TestCase[]>(row.test_cases_json, []),
+    files: safeJsonParse<ProjectFile[]>(row.files_json, []),
+    config: safeJsonParse<ProjectConfig>(row.config_json, {
+      browser: 'chrome',
+      browserVersion: 'latest',
+      viewport: 'desktop',
+      customWidth: 1440,
+      customHeight: 900,
+      timeoutMs: 15000,
+      retries: 1,
+      parallelWorkers: 1,
+      headless: true,
+      environment: 'staging',
+      baseUrl: String(row.url),
+      captureScreenshots: true,
+      recordVideo: false,
+      customTestData: {},
+    }),
     secretsMeta,
+    teamMembers: safeJsonParse<ProjectTeamMember[]>(row.team_members_json, []),
+    googleSheetId: String(row.google_sheet_id || '') || undefined,
+    googleSheetUrl: String(row.google_sheet_url || '') || undefined,
+    googleSheetTitle: String(row.google_sheet_title || '') || undefined,
+    googleSheetLastSync: String(row.google_sheet_last_sync || '') || undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
 }
 
-export async function listProjectsForUser(userId: string): Promise<AutomationProject[]> {
+export async function listProjectsForUser(
+  userId: string,
+  userEmail?: string,
+  userRole?: UserRole
+): Promise<AutomationProject[]> {
   const db = await getDb();
-  const rows = queryAll(
-    db,
-    'SELECT * FROM projects WHERE user_id = ? ORDER BY updated_at DESC',
-    [userId]
+  if (userRole === 'admin') {
+    const rows = queryAll(db, 'SELECT * FROM projects ORDER BY updated_at DESC');
+    return rows.map(rowToProject);
+  }
+  const rows = queryAll(db, 'SELECT * FROM projects ORDER BY updated_at DESC');
+  const all = rows.map(rowToProject);
+  const lowerEmail = (userEmail || '').toLowerCase();
+  return all.filter(
+    (p) =>
+      p.userId === userId ||
+      (lowerEmail && (p.teamMembers || []).some((m) => m.email.toLowerCase() === lowerEmail))
   );
-  return rows.map(rowToProject);
+}
+
+export function canAccessProject(
+  project: AutomationProject,
+  user: UserProfile,
+  requireWrite = false
+): boolean {
+  if (user.role === 'admin' || project.userId === user.id) return true;
+  const member = (project.teamMembers || []).find(
+    (m) => m.email.toLowerCase() === user.email.toLowerCase()
+  );
+  if (!member) return false;
+  if (requireWrite && member.role === 'viewer') return false;
+  return true;
 }
 
 export async function getProjectById(id: string): Promise<AutomationProject | null> {
@@ -276,7 +587,10 @@ export async function getProjectDecryptedSecrets(id: string): Promise<Record<str
   return decryptSecrets(row.secrets_enc || '');
 }
 
-export async function saveProject(project: AutomationProject, plainSecrets?: Record<string, string>): Promise<AutomationProject> {
+export async function saveProject(
+  project: AutomationProject,
+  plainSecrets?: Record<string, string>
+): Promise<AutomationProject> {
   const db = await getDb();
   const existing = queryOne<{ id: string; secrets_enc: string }>(
     db,
@@ -289,12 +603,21 @@ export async function saveProject(project: AutomationProject, plainSecrets?: Rec
       ? encryptSecrets(plainSecrets)
       : existing?.secrets_enc || '';
 
+  const selectedFwJson = JSON.stringify(
+    project.selectedFrameworks && project.selectedFrameworks.length > 0
+      ? project.selectedFrameworks
+      : [project.framework]
+  );
+  const teamMembersJson = JSON.stringify(project.teamMembers || []);
+
   if (existing) {
     db.run(
       `UPDATE projects SET
         name = ?, description = ?, url = ?, tool = ?, language = ?, framework = ?,
-        approach = ?, analysis_json = ?, test_cases_json = ?, files_json = ?,
-        config_json = ?, secrets_enc = ?, updated_at = ?
+        selected_frameworks_json = ?, approach = ?, analysis_json = ?, test_cases_json = ?,
+        files_json = ?, config_json = ?, secrets_enc = ?, team_members_json = ?,
+        google_sheet_id = ?, google_sheet_url = ?, google_sheet_title = ?, google_sheet_last_sync = ?,
+        updated_at = ?
       WHERE id = ?`,
       [
         project.name,
@@ -303,12 +626,18 @@ export async function saveProject(project: AutomationProject, plainSecrets?: Rec
         project.tool,
         project.language,
         project.framework,
+        selectedFwJson,
         project.approach,
         project.analysis ? JSON.stringify(project.analysis) : null,
         JSON.stringify(project.testCases),
         JSON.stringify(project.files),
         JSON.stringify(project.config),
         secretsEnc,
+        teamMembersJson,
+        project.googleSheetId || '',
+        project.googleSheetUrl || '',
+        project.googleSheetTitle || '',
+        project.googleSheetLastSync || '',
         project.updatedAt,
         project.id,
       ]
@@ -316,9 +645,11 @@ export async function saveProject(project: AutomationProject, plainSecrets?: Rec
   } else {
     db.run(
       `INSERT INTO projects (
-        id, user_id, name, description, url, tool, language, framework, approach,
-        analysis_json, test_cases_json, files_json, config_json, secrets_enc, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, user_id, name, description, url, tool, language, framework, selected_frameworks_json,
+        approach, analysis_json, test_cases_json, files_json, config_json, secrets_enc,
+        team_members_json, google_sheet_id, google_sheet_url, google_sheet_title, google_sheet_last_sync,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project.id,
         project.userId,
@@ -328,12 +659,18 @@ export async function saveProject(project: AutomationProject, plainSecrets?: Rec
         project.tool,
         project.language,
         project.framework,
+        selectedFwJson,
         project.approach,
         project.analysis ? JSON.stringify(project.analysis) : null,
         JSON.stringify(project.testCases),
         JSON.stringify(project.files),
         JSON.stringify(project.config),
         secretsEnc,
+        teamMembersJson,
+        project.googleSheetId || '',
+        project.googleSheetUrl || '',
+        project.googleSheetTitle || '',
+        project.googleSheetLastSync || '',
         project.createdAt,
         project.updatedAt,
       ]
@@ -349,6 +686,11 @@ export async function deleteProject(id: string): Promise<void> {
   db.run('DELETE FROM projects WHERE id = ?', [id]);
   db.run('DELETE FROM test_runs WHERE project_id = ?', [id]);
   db.run('DELETE FROM ai_conversations WHERE project_id = ?', [id]);
+  db.run('DELETE FROM sqa_plans WHERE project_id = ?', [id]);
+  db.run('DELETE FROM sqa_suites WHERE project_id = ?', [id]);
+  db.run('DELETE FROM sqa_defects WHERE project_id = ?', [id]);
+  db.run('DELETE FROM sqa_requirements WHERE project_id = ?', [id]);
+  db.run('DELETE FROM sqa_releases WHERE project_id = ?', [id]);
   persistDb();
 }
 
@@ -367,8 +709,8 @@ function rowToTestRun(row: Record<string, unknown>): TestRunRecord {
     failed: Number(row.failed || 0),
     skipped: Number(row.skipped || 0),
     durationMs: Number(row.duration_ms || 0),
-    results: JSON.parse(String(row.results_json || '[]')),
-    logs: JSON.parse(String(row.logs_json || '[]')),
+    results: safeJsonParse(row.results_json, []),
+    logs: safeJsonParse(row.logs_json, []),
     startedAt: String(row.started_at),
     completedAt: row.completed_at ? String(row.completed_at) : undefined,
   };
@@ -432,12 +774,12 @@ export async function listTestRuns(userId: string, projectId?: string): Promise<
   const rows = projectId
     ? queryAll(
         db,
-        'SELECT * FROM test_runs WHERE user_id = ? AND project_id = ? ORDER BY started_at DESC LIMIT 50',
+        'SELECT * FROM test_runs WHERE user_id = ? AND project_id = ? ORDER BY started_at DESC LIMIT 80',
         [userId, projectId]
       )
     : queryAll(
         db,
-        'SELECT * FROM test_runs WHERE user_id = ? ORDER BY started_at DESC LIMIT 50',
+        'SELECT * FROM test_runs WHERE user_id = ? ORDER BY started_at DESC LIMIT 80',
         [userId]
       );
   return rows.map(rowToTestRun);
@@ -458,7 +800,7 @@ export async function getAiConversation(projectId: string, userId: string): Prom
     [projectId, userId]
   );
   if (!row) return [];
-  return JSON.parse(row.messages_json || '[]') as AiMessage[];
+  return safeJsonParse<AiMessage[]>(row.messages_json, []);
 }
 
 export async function saveAiConversation(
@@ -481,5 +823,419 @@ export async function saveAiConversation(
       [id, projectId, userId, JSON.stringify(messages.slice(-40)), updatedAt]
     );
   }
+  persistDb();
+}
+
+// ---------- SQA Management CRUD ----------
+
+export async function listSqaPlans(userId: string, projectId?: string): Promise<SqaTestPlan[]> {
+  const db = await getDb();
+  const rows = projectId
+    ? queryAll(db, 'SELECT * FROM sqa_plans WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC', [
+        userId,
+        projectId,
+      ])
+    : queryAll(db, 'SELECT * FROM sqa_plans WHERE user_id = ? ORDER BY updated_at DESC', [userId]);
+  return rows.map((r) => ({
+    id: String(r.id),
+    projectId: String(r.project_id),
+    userId: String(r.user_id),
+    title: String(r.title),
+    strategy: String(r.strategy || ''),
+    scope: String(r.scope || ''),
+    objectives: String(r.objectives || ''),
+    resources: String(r.resources || ''),
+    scheduleStart: String(r.schedule_start || ''),
+    scheduleEnd: String(r.schedule_end || ''),
+    releaseTarget: String(r.release_target || ''),
+    status: (r.status as SqaTestPlan['status']) || 'Draft',
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+}
+
+export async function saveSqaPlan(plan: SqaTestPlan): Promise<SqaTestPlan> {
+  const db = await getDb();
+  const existing = queryOne<{ id: string }>(db, 'SELECT id FROM sqa_plans WHERE id = ?', [plan.id]);
+  if (existing) {
+    db.run(
+      `UPDATE sqa_plans SET title = ?, strategy = ?, scope = ?, objectives = ?, resources = ?,
+       schedule_start = ?, schedule_end = ?, release_target = ?, status = ?, updated_at = ? WHERE id = ?`,
+      [
+        plan.title,
+        plan.strategy,
+        plan.scope,
+        plan.objectives,
+        plan.resources,
+        plan.scheduleStart,
+        plan.scheduleEnd,
+        plan.releaseTarget,
+        plan.status,
+        plan.updatedAt,
+        plan.id,
+      ]
+    );
+  } else {
+    db.run(
+      `INSERT INTO sqa_plans (id, project_id, user_id, title, strategy, scope, objectives, resources,
+       schedule_start, schedule_end, release_target, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        plan.id,
+        plan.projectId,
+        plan.userId,
+        plan.title,
+        plan.strategy,
+        plan.scope,
+        plan.objectives,
+        plan.resources,
+        plan.scheduleStart,
+        plan.scheduleEnd,
+        plan.releaseTarget,
+        plan.status,
+        plan.createdAt,
+        plan.updatedAt,
+      ]
+    );
+  }
+  persistDb();
+  return plan;
+}
+
+export async function deleteSqaPlan(id: string, userId: string): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM sqa_plans WHERE id = ? AND user_id = ?', [id, userId]);
+  persistDb();
+}
+
+export async function listSqaSuites(userId: string, projectId?: string): Promise<SqaTestSuite[]> {
+  const db = await getDb();
+  const rows = projectId
+    ? queryAll(db, 'SELECT * FROM sqa_suites WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC', [
+        userId,
+        projectId,
+      ])
+    : queryAll(db, 'SELECT * FROM sqa_suites WHERE user_id = ? ORDER BY updated_at DESC', [userId]);
+  return rows.map((r) => ({
+    id: String(r.id),
+    projectId: String(r.project_id),
+    userId: String(r.user_id),
+    name: String(r.name),
+    suiteType: (r.suite_type as SqaTestSuite['suiteType']) || 'Regression',
+    description: String(r.description || ''),
+    testCaseIds: safeJsonParse<string[]>(r.test_case_ids_json, []),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+}
+
+export async function saveSqaSuite(suite: SqaTestSuite): Promise<SqaTestSuite> {
+  const db = await getDb();
+  const existing = queryOne<{ id: string }>(db, 'SELECT id FROM sqa_suites WHERE id = ?', [suite.id]);
+  if (existing) {
+    db.run(
+      `UPDATE sqa_suites SET name = ?, suite_type = ?, description = ?, test_case_ids_json = ?, updated_at = ? WHERE id = ?`,
+      [suite.name, suite.suiteType, suite.description, JSON.stringify(suite.testCaseIds), suite.updatedAt, suite.id]
+    );
+  } else {
+    db.run(
+      `INSERT INTO sqa_suites (id, project_id, user_id, name, suite_type, description, test_case_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        suite.id,
+        suite.projectId,
+        suite.userId,
+        suite.name,
+        suite.suiteType,
+        suite.description,
+        JSON.stringify(suite.testCaseIds),
+        suite.createdAt,
+        suite.updatedAt,
+      ]
+    );
+  }
+  persistDb();
+  return suite;
+}
+
+export async function deleteSqaSuite(id: string, userId: string): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM sqa_suites WHERE id = ? AND user_id = ?', [id, userId]);
+  persistDb();
+}
+
+export async function listSqaDefects(userId: string, projectId?: string): Promise<SqaDefect[]> {
+  const db = await getDb();
+  const rows = projectId
+    ? queryAll(db, 'SELECT * FROM sqa_defects WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC', [
+        userId,
+        projectId,
+      ])
+    : queryAll(db, 'SELECT * FROM sqa_defects WHERE user_id = ? ORDER BY updated_at DESC', [userId]);
+  return rows.map((r) => ({
+    id: String(r.id),
+    bugCode: String(r.bug_code),
+    projectId: String(r.project_id),
+    userId: String(r.user_id),
+    title: String(r.title),
+    description: String(r.description || ''),
+    stepsToReproduce: String(r.steps_to_reproduce || ''),
+    expectedResult: String(r.expected_result || ''),
+    actualResult: String(r.actual_result || ''),
+    severity: (r.severity as SqaDefect['severity']) || 'Major',
+    priority: (r.priority as SqaDefect['priority']) || 'High',
+    assignedDeveloper: String(r.assigned_developer || ''),
+    reportedBy: String(r.reported_by || ''),
+    status: (r.status as SqaDefect['status']) || 'New',
+    linkedTestCaseId: String(r.linked_test_case_id || '') || undefined,
+    linkedRequirementId: String(r.linked_requirement_id || '') || undefined,
+    screenshotUrl: String(r.screenshot_url || '') || undefined,
+    attachmentName: String(r.attachment_name || '') || undefined,
+    resolutionNotes: String(r.resolution_notes || '') || undefined,
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+}
+
+export async function saveSqaDefect(defect: SqaDefect): Promise<SqaDefect> {
+  const db = await getDb();
+  const existing = queryOne<{ id: string }>(db, 'SELECT id FROM sqa_defects WHERE id = ?', [defect.id]);
+  if (existing) {
+    db.run(
+      `UPDATE sqa_defects SET title = ?, description = ?, steps_to_reproduce = ?, expected_result = ?,
+       actual_result = ?, severity = ?, priority = ?, assigned_developer = ?, reported_by = ?,
+       status = ?, linked_test_case_id = ?, linked_requirement_id = ?, screenshot_url = ?,
+       attachment_name = ?, resolution_notes = ?, updated_at = ? WHERE id = ?`,
+      [
+        defect.title,
+        defect.description,
+        defect.stepsToReproduce,
+        defect.expectedResult,
+        defect.actualResult,
+        defect.severity,
+        defect.priority,
+        defect.assignedDeveloper,
+        defect.reportedBy,
+        defect.status,
+        defect.linkedTestCaseId || '',
+        defect.linkedRequirementId || '',
+        defect.screenshotUrl || '',
+        defect.attachmentName || '',
+        defect.resolutionNotes || '',
+        defect.updatedAt,
+        defect.id,
+      ]
+    );
+  } else {
+    db.run(
+      `INSERT INTO sqa_defects (id, bug_code, project_id, user_id, title, description, steps_to_reproduce,
+       expected_result, actual_result, severity, priority, assigned_developer, reported_by, status,
+       linked_test_case_id, linked_requirement_id, screenshot_url, attachment_name, resolution_notes,
+       created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        defect.id,
+        defect.bugCode,
+        defect.projectId,
+        defect.userId,
+        defect.title,
+        defect.description,
+        defect.stepsToReproduce,
+        defect.expectedResult,
+        defect.actualResult,
+        defect.severity,
+        defect.priority,
+        defect.assignedDeveloper,
+        defect.reportedBy,
+        defect.status,
+        defect.linkedTestCaseId || '',
+        defect.linkedRequirementId || '',
+        defect.screenshotUrl || '',
+        defect.attachmentName || '',
+        defect.resolutionNotes || '',
+        defect.createdAt,
+        defect.updatedAt,
+      ]
+    );
+  }
+  persistDb();
+  return defect;
+}
+
+export async function deleteSqaDefect(id: string, userId: string): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM sqa_defects WHERE id = ? AND user_id = ?', [id, userId]);
+  persistDb();
+}
+
+export async function listSqaRequirements(
+  userId: string,
+  projectId?: string
+): Promise<SqaRequirement[]> {
+  const db = await getDb();
+  const rows = projectId
+    ? queryAll(
+        db,
+        'SELECT * FROM sqa_requirements WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC',
+        [userId, projectId]
+      )
+    : queryAll(db, 'SELECT * FROM sqa_requirements WHERE user_id = ? ORDER BY updated_at DESC', [
+        userId,
+      ]);
+  return rows.map((r) => ({
+    id: String(r.id),
+    reqCode: String(r.req_code),
+    projectId: String(r.project_id),
+    userId: String(r.user_id),
+    type: (r.type as SqaRequirement['type']) || 'Functional',
+    title: String(r.title),
+    description: String(r.description || ''),
+    module: String(r.module || ''),
+    priority: (r.priority as SqaRequirement['priority']) || 'High',
+    linkedTestCaseIds: safeJsonParse<string[]>(r.linked_test_case_ids_json, []),
+    linkedDefectIds: safeJsonParse<string[]>(r.linked_defect_ids_json, []),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+}
+
+export async function saveSqaRequirement(reqItem: SqaRequirement): Promise<SqaRequirement> {
+  const db = await getDb();
+  const existing = queryOne<{ id: string }>(db, 'SELECT id FROM sqa_requirements WHERE id = ?', [
+    reqItem.id,
+  ]);
+  if (existing) {
+    db.run(
+      `UPDATE sqa_requirements SET type = ?, title = ?, description = ?, module = ?, priority = ?,
+       linked_test_case_ids_json = ?, linked_defect_ids_json = ?, updated_at = ? WHERE id = ?`,
+      [
+        reqItem.type,
+        reqItem.title,
+        reqItem.description,
+        reqItem.module,
+        reqItem.priority,
+        JSON.stringify(reqItem.linkedTestCaseIds),
+        JSON.stringify(reqItem.linkedDefectIds),
+        reqItem.updatedAt,
+        reqItem.id,
+      ]
+    );
+  } else {
+    db.run(
+      `INSERT INTO sqa_requirements (id, req_code, project_id, user_id, type, title, description, module,
+       priority, linked_test_case_ids_json, linked_defect_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reqItem.id,
+        reqItem.reqCode,
+        reqItem.projectId,
+        reqItem.userId,
+        reqItem.type,
+        reqItem.title,
+        reqItem.description,
+        reqItem.module,
+        reqItem.priority,
+        JSON.stringify(reqItem.linkedTestCaseIds),
+        JSON.stringify(reqItem.linkedDefectIds),
+        reqItem.createdAt,
+        reqItem.updatedAt,
+      ]
+    );
+  }
+  persistDb();
+  return reqItem;
+}
+
+export async function deleteSqaRequirement(id: string, userId: string): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM sqa_requirements WHERE id = ? AND user_id = ?', [id, userId]);
+  persistDb();
+}
+
+export async function listSqaReleases(userId: string, projectId?: string): Promise<SqaRelease[]> {
+  const db = await getDb();
+  const rows = projectId
+    ? queryAll(
+        db,
+        'SELECT * FROM sqa_releases WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC',
+        [userId, projectId]
+      )
+    : queryAll(db, 'SELECT * FROM sqa_releases WHERE user_id = ? ORDER BY updated_at DESC', [
+        userId,
+      ]);
+  return rows.map((r) => ({
+    id: String(r.id),
+    projectId: String(r.project_id),
+    userId: String(r.user_id),
+    version: String(r.version),
+    name: String(r.name),
+    buildNumber: String(r.build_number || ''),
+    environment: (r.environment as SqaRelease['environment']) || 'staging',
+    targetDate: String(r.target_date || ''),
+    buildVerified: Boolean(r.build_verified),
+    readinessStatus: (r.readiness_status as SqaRelease['readinessStatus']) || 'Pending',
+    approvalStatus: (r.approval_status as SqaRelease['approvalStatus']) || 'Pending',
+    approvedBy: String(r.approved_by || '') || undefined,
+    notes: String(r.notes || ''),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+}
+
+export async function saveSqaRelease(release: SqaRelease): Promise<SqaRelease> {
+  const db = await getDb();
+  const existing = queryOne<{ id: string }>(db, 'SELECT id FROM sqa_releases WHERE id = ?', [
+    release.id,
+  ]);
+  if (existing) {
+    db.run(
+      `UPDATE sqa_releases SET version = ?, name = ?, build_number = ?, environment = ?, target_date = ?,
+       build_verified = ?, readiness_status = ?, approval_status = ?, approved_by = ?, notes = ?, updated_at = ? WHERE id = ?`,
+      [
+        release.version,
+        release.name,
+        release.buildNumber,
+        release.environment,
+        release.targetDate,
+        release.buildVerified ? 1 : 0,
+        release.readinessStatus,
+        release.approvalStatus,
+        release.approvedBy || '',
+        release.notes,
+        release.updatedAt,
+        release.id,
+      ]
+    );
+  } else {
+    db.run(
+      `INSERT INTO sqa_releases (id, project_id, user_id, version, name, build_number, environment, target_date,
+       build_verified, readiness_status, approval_status, approved_by, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        release.id,
+        release.projectId,
+        release.userId,
+        release.version,
+        release.name,
+        release.buildNumber,
+        release.environment,
+        release.targetDate,
+        release.buildVerified ? 1 : 0,
+        release.readinessStatus,
+        release.approvalStatus,
+        release.approvedBy || '',
+        release.notes,
+        release.createdAt,
+        release.updatedAt,
+      ]
+    );
+  }
+  persistDb();
+  return release;
+}
+
+export async function deleteSqaRelease(id: string, userId: string): Promise<void> {
+  const db = await getDb();
+  db.run('DELETE FROM sqa_releases WHERE id = ? AND user_id = ?', [id, userId]);
   persistDb();
 }

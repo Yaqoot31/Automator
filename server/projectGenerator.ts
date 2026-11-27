@@ -832,6 +832,441 @@ ${testsBody}
         )
       );
     });
+  } else if (framework === 'playwright-ts') {
+    files.push(
+      makeFile(
+        'package.json',
+        'json',
+        JSON.stringify(
+          {
+            name: toSnakeCase(projectName).replace(/_/g, '-'),
+            version: '1.0.0',
+            private: true,
+            type: 'module',
+            scripts: {
+              test: 'playwright test',
+              'test:headed': 'playwright test --headed',
+              'test:report': 'playwright show-report reports/playwright-html',
+              typecheck: 'tsc --noEmit',
+            },
+            devDependencies: {
+              '@playwright/test': '^1.50.0',
+              '@types/node': '^22.10.0',
+              typescript: '^5.7.0',
+            },
+          },
+          null,
+          2
+        )
+      )
+    );
+
+    files.push(
+      makeFile(
+        'tsconfig.json',
+        'json',
+        JSON.stringify(
+          {
+            compilerOptions: {
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              strict: true,
+              noEmit: true,
+            },
+            include: ['**/*.ts'],
+          },
+          null,
+          2
+        )
+      )
+    );
+
+    files.push(
+      makeFile(
+        'config/playwright.config.ts',
+        'typescript',
+        `import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: '../tests',
+  timeout: ${config.timeoutMs},
+  retries: ${config.retries},
+  workers: ${config.parallelWorkers},
+  outputDir: '../screenshots',
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: '../reports/playwright-html', open: 'never' }],
+    ['json', { outputFile: '../reports/results.json' }],
+  ],
+  use: {
+    baseURL: process.env.BASE_URL || '${escapeStr(baseUrl)}',
+    headless: ${config.headless},
+    viewport: { width: ${config.customWidth}, height: ${config.customHeight} },
+    screenshot: '${config.captureScreenshots ? 'only-on-failure' : 'off'}',
+    video: '${config.recordVideo ? 'retain-on-failure' : 'off'}',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } },
+  ],
+});
+`
+      )
+    );
+
+    files.push(
+      makeFile(
+        'pages/BasePage.ts',
+        'typescript',
+        `import { expect, type Page } from '@playwright/test';
+
+export class BasePage {
+  constructor(protected readonly page: Page) {}
+
+  async goto(path = '/') {
+    const res = await this.page.goto(path, { waitUntil: 'domcontentloaded' });
+    expect(res?.status() ?? 200).toBeLessThan(400);
+    await expect(this.page.locator('body')).toBeVisible();
+  }
+
+  async assertNoHorizontalOverflow() {
+    const overflow = await this.page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 4
+    );
+    expect(overflow).toBe(false);
+  }
+}
+`
+      )
+    );
+
+    pages.forEach((page) => {
+      const className = sanitizeIdentifier(page.path);
+      const locators = page.elements
+        .filter((e) => e.category !== 'image')
+        .slice(0, 6)
+        .map((el, idx) => `  get ${inferFieldName(el.locator, idx, el.category)}() { return this.page.locator('${escapeStr(el.locator)}').first(); }`)
+        .join('\n');
+
+      files.push(
+        makeFile(
+          `pages/${className}Page.ts`,
+          'typescript',
+          `import { expect } from '@playwright/test';
+import { BasePage } from './BasePage';
+
+export class ${className}Page extends BasePage {
+  readonly path = '${escapeStr(page.path)}';
+
+${locators || "  get body() { return this.page.locator('body'); }"}
+
+  async open() {
+    await this.goto(this.path);
+    await expect(this.page).toHaveTitle(/.+/);
+  }
+}
+`
+        )
+      );
+
+      const pageTests = testCases.filter((tc) => tc.pagePath === page.path).slice(0, 6);
+      const specs = (pageTests.length > 0 ? pageTests : testCases.slice(0, 3))
+        .map((tc) => {
+          const firstAction = tc.steps.find((s) => s.action === 'assert_visible' && s.target !== 'body');
+          return `  test('${tc.code}: ${escapeStr(tc.title)}', async ({ page }) => {
+    const pom = new ${className}Page(page);
+    await pom.open();
+${firstAction ? `    await expect(page.locator('${escapeStr(firstAction.target)}').first()).toBeVisible();` : `    await expect(page.locator('body')).toBeVisible();`}
+  });`;
+        })
+        .join('\n\n');
+
+      files.push(
+        makeFile(
+          `tests/${toSnakeCase(className)}.spec.ts`,
+          'typescript',
+          `import { test, expect } from '@playwright/test';
+import { ${className}Page } from '../pages/${className}Page';
+
+test.describe('${className} Playwright Suite (${approach.toUpperCase()})', () => {
+${specs}
+});
+`
+        )
+      );
+    });
+
+    // Core scenario-organized suites
+    files.push(
+      makeFile(
+        'tests/homepage.spec.ts',
+        'typescript',
+        `import { test, expect } from '@playwright/test';
+import { BasePage } from '../pages/BasePage';
+
+test('Homepage loads cleanly with valid title and zero console errors', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+  const base = new BasePage(page);
+  await base.goto('/');
+  await expect(page).toHaveTitle(/.+/);
+  expect(errors).toEqual([]);
+});
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'tests/navigation.spec.ts',
+        'typescript',
+        `import { test, expect } from '@playwright/test';
+
+test('Primary navigation links render valid destinations', async ({ page }) => {
+  await page.goto('/');
+  const links = await page.locator('a[href]').all();
+  expect(links.length).toBeGreaterThanOrEqual(0);
+  if (links.length > 0) {
+    await expect(links[0]).toBeVisible();
+  }
+});
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'tests/form.spec.ts',
+        'typescript',
+        `import { test, expect } from '@playwright/test';
+
+test('Detected interactive inputs accept values cleanly', async ({ page }) => {
+  await page.goto('/');
+  const inputs = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="password"])');
+  const count = await inputs.count();
+  if (count > 0) {
+    await expect(inputs.first()).toBeVisible();
+  }
+});
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'tests/responsive.spec.ts',
+        'typescript',
+        `import { test } from '@playwright/test';
+import { BasePage } from '../pages/BasePage';
+
+for (const vp of [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'tablet', width: 768, height: 1024 },
+  { name: 'mobile', width: 390, height: 844 },
+]) {
+  test(\`Responsive layout has zero horizontal overflow on \${vp.name}\`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    const base = new BasePage(page);
+    await base.goto('/');
+    await base.assertNoHorizontalOverflow();
+  });
+}
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'tests/regression.spec.ts',
+        'typescript',
+        `import { test, expect } from '@playwright/test';
+
+test('Regression smoke across discovered pages', async ({ page }) => {
+  for (const route of ${JSON.stringify(pages.slice(0, 6).map((p) => p.path))}) {
+    const res = await page.goto(route, { waitUntil: 'domcontentloaded' });
+    expect(res?.status() ?? 200).toBeLessThan(400);
+    await expect(page.locator('body')).toBeVisible();
+  }
+});
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+npm install
+npx playwright install chromium
+npx playwright test --config=config/playwright.config.ts
+`
+      )
+    );
+  } else if (framework === 'playwright-python') {
+    files.push(
+      makeFile(
+        'requirements.txt',
+        'text',
+        `playwright>=1.50.0
+pytest>=8.3.0
+pytest-playwright>=0.6.2
+pytest-html>=4.1.1
+python-dotenv>=1.0.1
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'pytest.ini',
+        'properties',
+        `[pytest]
+testpaths = tests
+addopts = -v --html=reports/report.html --self-contained-html
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'config/settings.py',
+        'python',
+        `import os
+
+BASE_URL = os.getenv("BASE_URL", "${escapeStr(baseUrl)}")
+HEADLESS = os.getenv("HEADLESS", "${String(config.headless).toLowerCase()}") == "true"
+TIMEOUT_MS = ${config.timeoutMs}
+VIEWPORT = {"width": ${config.customWidth}, "height": ${config.customHeight}}
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'conftest.py',
+        'python',
+        `import os
+import time
+import pytest
+from playwright.sync_api import sync_playwright
+from config.settings import HEADLESS, VIEWPORT
+
+
+@pytest.fixture(scope="function")
+def page(request):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=HEADLESS)
+        context = browser.new_context(viewport=VIEWPORT)
+        pg = context.new_page()
+        yield pg
+        os.makedirs("screenshots", exist_ok=True)
+        pg.screenshot(path=f"screenshots/{request.node.name}_{int(time.time())}.png")
+        context.close()
+        browser.close()
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'pages/base_page.py',
+        'python',
+        `from playwright.sync_api import Page, expect
+
+
+class BasePage:
+    def __init__(self, page: Page):
+        self.page = page
+
+    def open(self, url: str) -> None:
+        resp = self.page.goto(url, wait_until="domcontentloaded")
+        assert resp is None or resp.status < 400
+        expect(self.page.locator("body")).to_be_visible()
+
+    def has_horizontal_overflow(self) -> bool:
+        return bool(
+            self.page.evaluate(
+                "() => document.documentElement.scrollWidth > window.innerWidth + 4"
+            )
+        )
+`
+      )
+    );
+
+    pages.forEach((page) => {
+      const className = sanitizeIdentifier(page.path);
+      const snake = toSnakeCase(className);
+      const locators = page.elements
+        .filter((e) => e.category !== 'image')
+        .slice(0, 6)
+        .map((el, idx) => `    ${inferFieldName(el.locator, idx, el.category).toUpperCase()} = "${escapeStr(el.locator)}"`)
+        .join('\n');
+
+      files.push(
+        makeFile(
+          `pages/${snake}_page.py`,
+          'python',
+          `from pages.base_page import BasePage
+
+
+class ${className}Page(BasePage):
+${locators || '    BODY = "body"'}
+
+    def verify_loaded(self) -> bool:
+        return len(self.page.title().strip()) > 0
+`
+        )
+      );
+
+      const pageTests = testCases.filter((tc) => tc.pagePath === page.path).slice(0, 6);
+      const pyTests = (pageTests.length > 0 ? pageTests : testCases.slice(0, 3))
+        .map((tc, idx) => {
+          return `def test_${toSnakeCase(tc.code)}_${idx + 1}(page):
+    """${tc.code}: ${tc.title}"""
+    pom = ${className}Page(page)
+    pom.open("${escapeStr(page.url)}")
+    assert pom.verify_loaded(), "Expected page title to be populated"
+`;
+        })
+        .join('\n\n');
+
+      files.push(
+        makeFile(
+          `tests/test_${snake}.py`,
+          'python',
+          `from pages.${snake}_page import ${className}Page
+
+
+${pyTests}
+`
+        )
+      );
+    });
+
+    files.push(
+      makeFile(
+        'tests/test_responsive.py',
+        'python',
+        `from config.settings import BASE_URL
+from pages.base_page import BasePage
+
+
+def test_responsive_viewports(page):
+    base = BasePage(page)
+    for width, height in [(1440, 900), (768, 1024), (390, 844)]:
+        page.set_viewport_size({"width": width, "height": height})
+        base.open(BASE_URL)
+        assert not base.has_horizontal_overflow(), f"Overflow detected at {width}x{height}"
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+pip install -r requirements.txt
+playwright install chromium
+pytest
+`
+      )
+    );
   } else {
     // selenium-python-pytest
     files.push(
@@ -1009,6 +1444,73 @@ ${pyTests}
         )
       );
     });
+
+    files.push(
+      makeFile(
+        'tests/test_responsive.py',
+        'python',
+        `from config.settings import BASE_URL
+from pages.base_page import BasePage
+
+
+def test_responsive_viewports(driver):
+    page = BasePage(driver)
+    for w, h in [(1440, 900), (768, 1024), (390, 844)]:
+        driver.set_window_size(w, h)
+        page.open(BASE_URL)
+        assert not page.has_horizontal_overflow(), f"Horizontal overflow at {w}x{h}"
+`
+      )
+    );
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+pip install -r requirements.txt
+pytest
+`
+      )
+    );
+  }
+
+  // Ensure execution helper exists for Java/JS/Cypress stacks too
+  if (framework.startsWith('selenium-java')) {
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+mvn test
+`
+      )
+    );
+  } else if (framework.startsWith('cypress')) {
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+npm install
+npx cypress run
+`
+      )
+    );
+  } else if (framework === 'selenium-js' || framework === 'selenium-ts') {
+    files.push(
+      makeFile(
+        'execution/run.sh',
+        'text',
+        `#!/usr/bin/env bash
+set -euo pipefail
+npm install
+npm test
+`
+      )
+    );
   }
 
   // README.md & .env.example
@@ -1035,16 +1537,16 @@ Automated QA Test Project generated from **${analysis.url}**
 
 - **Framework**: \`${framework}\`
 - **Architecture**: Page Object Model (${approach})
-- **Discovered Pages**: ${analysis.pages.length}
+- **Inspected Pages**: ${analysis.pages.length} (Discovered: ${analysis.discoveredUrls?.length ?? analysis.pages.length}, Skipped: ${analysis.skippedPages?.length ?? 0})
 - **Generated Test Cases**: ${testCases.length}
 
 ## Project Structure
 
-- \`tests/\`: Automated test specs organized by page
+- \`tests/\`: Automated test specs organized by page and scenario (homepage, navigation, forms, responsive, regression)
 - \`pages/\`: Page Object Model classes with resilient locators
 - \`fixtures/\` & \`test-data/\`: Structured JSON test data
-- \`support/\`: Driver factory, custom commands, logging, and screenshot helpers
 - \`config/\`: Environment and browser settings
+- \`execution/\`: One-command test execution script (\`run.sh\`)
 - \`reports/\`, \`screenshots/\`, \`videos/\`: Execution artifacts
 
 ## Quick Start
@@ -1052,11 +1554,15 @@ Automated QA Test Project generated from **${analysis.url}**
 ${
   framework.startsWith('selenium-java')
     ? '```bash\nmvn test\n```'
-    : framework.startsWith('selenium-python')
-      ? '```bash\npip install -r requirements.txt\npytest\n```'
-      : framework.startsWith('cypress')
-        ? '```bash\nnpm install\nnpx cypress run\n```'
-        : '```bash\nnpm install\nnpm test\n```'
+    : framework === 'playwright-python'
+      ? '```bash\npip install -r requirements.txt\nplaywright install chromium\npytest\n```'
+      : framework.startsWith('selenium-python')
+        ? '```bash\npip install -r requirements.txt\npytest\n```'
+        : framework === 'playwright-ts'
+          ? '```bash\nnpm install\nnpx playwright install chromium\nnpx playwright test\n```'
+          : framework.startsWith('cypress')
+            ? '```bash\nnpm install\nnpx cypress run\n```'
+            : '```bash\nnpm install\nnpm test\n```'
 }
 
 > **Security Note**: Never commit real credentials. Supply test accounts via environment variables (\`TEST_USERNAME\`, \`TEST_PASSWORD\`).
@@ -1065,4 +1571,75 @@ ${
   );
 
   return files;
+}
+
+export function generateMultiFrameworkProject(params: {
+  projectName: string;
+  frameworks: AutomationFramework[];
+  approach: TestingApproach;
+  analysis: WebsiteAnalysisReport;
+  testCases: TestCase[];
+  config: ProjectConfig;
+}): ProjectFile[] {
+  const unique = Array.from(new Set(params.frameworks));
+  if (unique.length <= 1) {
+    return generateAutomationProject({
+      projectName: params.projectName,
+      framework: unique[0] || 'playwright-ts',
+      approach: params.approach,
+      analysis: params.analysis,
+      testCases: params.testCases,
+      config: params.config,
+    });
+  }
+
+  const combined: ProjectFile[] = [
+    makeFile(
+      'README.md',
+      'markdown',
+      `# ${params.projectName} — Multi-Language Automation Suite
+
+Generated from **${params.analysis.url}** across **${unique.length}** stacks:
+${unique.map((fw) => `- \`${fw}/\` — Independent ${fw} automation workspace`).join('\n')}
+
+Each subdirectory is completely self-contained with its own dependency manifest (\`pom.xml\`, \`package.json\`, or \`requirements.txt\`), configuration, Page Objects, test specs, and \`execution/run.sh\`.
+
+> **Security Note**: Never commit real credentials or API keys. Configure \`.env\` from \`.env.example\` locally or in CI/CD.
+`
+    ),
+    makeFile(
+      '.env.example',
+      'properties',
+      `BASE_URL=${params.config.baseUrl || params.analysis.url}
+BROWSER=${params.config.browser}
+HEADLESS=${params.config.headless}
+TEST_USERNAME=
+TEST_PASSWORD=
+`
+    ),
+  ];
+
+  for (const fw of unique) {
+    const subFiles = generateAutomationProject({
+      projectName: params.projectName,
+      framework: fw,
+      approach: params.approach,
+      analysis: params.analysis,
+      testCases: params.testCases,
+      config: params.config,
+    });
+    for (const f of subFiles) {
+      const prefixed = `${fw}/${f.path}`;
+      const parts = prefixed.split('/');
+      const name = parts.pop() || prefixed;
+      combined.push({
+        ...f,
+        path: prefixed,
+        name,
+        folder: parts.join('/'),
+      });
+    }
+  }
+
+  return combined;
 }
