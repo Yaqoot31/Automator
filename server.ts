@@ -199,46 +199,23 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
   next();
 }
 
-async function main() {
+export type BroadcastFn = (userId: string | null, event: Record<string, unknown>) => void;
+
+export async function createExpressApp(options?: {
+  onReadyBroadcast?: (setter: (fn: BroadcastFn) => void) => void;
+}): Promise<express.Express> {
   await getDb();
 
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '6mb' }));
 
-  const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  const wsClients = new Map<WebSocket, { userId?: string }>();
-
-  wss.on('connection', (ws, req) => {
-    const cookies = parseCookies(req.headers.cookie);
-    const cookieTok = cookies[SESSION_COOKIE_NAME];
-    const verifiedCookie = cookieTok ? verifyAuthToken(cookieTok) : null;
-    wsClients.set(ws, verifiedCookie ? { userId: verifiedCookie.userId } : {});
-    ws.on('message', (raw) => {
-      try {
-        const msg = JSON.parse(String(raw)) as { type?: string; token?: string };
-        if (msg.type === 'auth' && msg.token) {
-          const verified = verifyAuthToken(msg.token);
-          if (verified) {
-            wsClients.set(ws, { userId: verified.userId });
-          }
-        }
-      } catch {
-        // Ignore malformed WS payloads
-      }
-    });
-    ws.on('close', () => wsClients.delete(ws));
+  let broadcastImpl: BroadcastFn = () => {};
+  options?.onReadyBroadcast?.((fn) => {
+    broadcastImpl = fn;
   });
-
-  const broadcastToUser = (userId: string | null, event: Record<string, unknown>) => {
-    const data = JSON.stringify(event);
-    for (const [client, meta] of wsClients.entries()) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      if (!userId || meta.userId === userId) {
-        client.send(data);
-      }
-    }
+  const broadcastToUser: BroadcastFn = (userId, event) => {
+    broadcastImpl(userId, event);
   };
 
   const authLimiter = createRateLimiter(20, 60_000);
@@ -1486,19 +1463,72 @@ async function main() {
     res.send(json);
   });
 
+  // Explicit JSON 404 for unmatched /api/* routes
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
+  return app;
+}
+
+async function startStandaloneServer() {
+  let setBroadcast: (fn: BroadcastFn) => void = () => {};
+  const app = await createExpressApp({
+    onReadyBroadcast: (setter) => {
+      setBroadcast = setter;
+    },
+  });
+
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wsClients = new Map<WebSocket, { userId?: string }>();
+
+  wss.on('connection', (ws, req) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const cookieTok = cookies[SESSION_COOKIE_NAME];
+    const verifiedCookie = cookieTok ? verifyAuthToken(cookieTok) : null;
+    wsClients.set(ws, verifiedCookie ? { userId: verifiedCookie.userId } : {});
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(String(raw)) as { type?: string; token?: string };
+        if (msg.type === 'auth' && msg.token) {
+          const verified = verifyAuthToken(msg.token);
+          if (verified) {
+            wsClients.set(ws, { userId: verified.userId });
+          }
+        }
+      } catch {
+        // Ignore malformed WS payloads
+      }
+    });
+    ws.on('close', () => wsClients.delete(ws));
+  });
+
+  setBroadcast((userId, event) => {
+    const data = JSON.stringify(event);
+    for (const [client, meta] of wsClients.entries()) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (!userId || meta.userId === userId) {
+        client.send(data);
+      }
+    }
+  });
+
   // Vite dev middleware or static production build
-  const isProd = process.env.NODE_ENV === 'production';
-  if (!isProd) {
+  const distDir = path.resolve(process.cwd(), 'dist');
+  const distIndex = path.join(distDir, 'index.html');
+  const useProdStatic = process.env.NODE_ENV === 'production' && fs.existsSync(distIndex);
+
+  if (!useProdStatic) {
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
     app.use((_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+      res.sendFile(distIndex);
     });
   }
 
@@ -1508,7 +1538,9 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error('Fatal startup error:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL && !process.env.VERCEL_ENV) {
+  startStandaloneServer().catch((err) => {
+    console.error('Fatal startup error:', err);
+    process.exit(1);
+  });
+}

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import initSqlJs, { type Database } from 'sql.js';
 import type {
@@ -25,7 +26,11 @@ import type {
 } from '../src/types/index.js';
 import { decryptSecrets, encryptSecrets, maskSecretValue } from './security.js';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const BUNDLED_DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR =
+  process.env.VERCEL || process.env.VERCEL_ENV
+    ? path.join(os.tmpdir(), 'automator-data')
+    : BUNDLED_DATA_DIR;
 const DB_PATH = path.join(DATA_DIR, 'automator.db');
 export const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
@@ -57,8 +62,12 @@ export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
   ensureDirs();
   const SQL = await initSqlJs();
+  const bundledDbPath = path.join(BUNDLED_DATA_DIR, 'automator.db');
   if (fs.existsSync(DB_PATH)) {
     const fileBuf = fs.readFileSync(DB_PATH);
+    dbInstance = new SQL.Database(fileBuf);
+  } else if (DATA_DIR !== BUNDLED_DATA_DIR && fs.existsSync(bundledDbPath)) {
+    const fileBuf = fs.readFileSync(bundledDbPath);
     dbInstance = new SQL.Database(fileBuf);
   } else {
     dbInstance = new SQL.Database();
