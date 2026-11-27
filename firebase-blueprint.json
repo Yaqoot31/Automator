@@ -1,0 +1,283 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Non-PII workspace display profile for an authenticated user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["sqa_engineer", "qa_lead", "developer", "project_manager", "viewer", "engineer"] },
+        "jobTitle": { "type": "string", "maxLength": 120 },
+        "organization": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "PII-isolated private account metadata restricted strictly to the owner.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "emailVerified": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "emailVerified", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Server-provisioned administrator marker document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 160 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedAt"]
+    },
+    "AutomationProjectDoc": {
+      "title": "AutomationProjectDoc",
+      "description": "Top-level automation project owned by a verified user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 400 },
+        "url": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "tool": { "type": "string", "maxLength": 32 },
+        "language": { "type": "string", "maxLength": 32 },
+        "framework": { "type": "string", "maxLength": 48 },
+        "selectedFrameworks": { "type": "array" },
+        "approach": { "type": "string", "maxLength": 32 },
+        "testCaseCount": { "type": "integer" },
+        "fileCount": { "type": "integer" },
+        "inspectedPagesCount": { "type": "integer" },
+        "discoveredUrlsCount": { "type": "integer" },
+        "coverageScope": { "type": "string", "maxLength": 40 },
+        "googleSheetId": { "type": "string", "maxLength": 200 },
+        "googleSheetUrl": { "type": "string", "maxLength": 500 },
+        "googleSheetTitle": { "type": "string", "maxLength": 200 },
+        "googleSheetLastSync": { "type": "string", "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "name", "url", "tool", "language", "framework", "approach", "createdAt", "updatedAt"]
+    },
+    "TestCaseDoc": {
+      "title": "TestCaseDoc",
+      "description": "14-column SQA & automation test case belonging to a project.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "module": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "scenario": { "type": "string", "maxLength": 1000 },
+        "preconditions": { "type": "string", "maxLength": 500 },
+        "testData": { "type": "string", "maxLength": 500 },
+        "expectedResult": { "type": "string", "maxLength": 1000 },
+        "actualResult": { "type": "string", "maxLength": 1000 },
+        "comments": { "type": "string", "maxLength": 1000 },
+        "category": { "type": "string", "maxLength": 40 },
+        "testingType": { "type": "string", "maxLength": 40 },
+        "priority": { "type": "string", "enum": ["Critical", "High", "Medium", "Low"] },
+        "severity": { "type": "string", "enum": ["Blocker", "Critical", "Major", "Minor", "Trivial"] },
+        "status": { "type": "string", "enum": ["pending", "passed", "failed", "skipped"] },
+        "sqaStatus": { "type": "string", "enum": ["Pass", "Fail", "Blocked", "Not Run"] },
+        "automationStatus": { "type": "string", "enum": ["Automated", "Manual", "In Progress", "Not Automated"] },
+        "pagePath": { "type": "string", "maxLength": 300 },
+        "enabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "ownerUid", "code", "title", "category", "testingType", "priority", "severity", "status", "sqaStatus", "automationStatus", "createdAt", "updatedAt"]
+    },
+    "TestRunDoc": {
+      "title": "TestRunDoc",
+      "description": "Execution record for an automation project run.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "browser": { "type": "string", "maxLength": 32 },
+        "viewport": { "type": "string", "maxLength": 32 },
+        "headless": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["queued", "running", "completed", "failed", "cancelled"] },
+        "totalTests": { "type": "integer" },
+        "passed": { "type": "integer" },
+        "failed": { "type": "integer" },
+        "skipped": { "type": "integer" },
+        "durationMs": { "type": "integer" },
+        "startedAt": { "type": "string", "maxLength": 64 },
+        "completedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "ownerUid", "projectName", "browser", "viewport", "status", "totalTests", "passed", "failed", "skipped", "durationMs", "startedAt", "createdAt", "updatedAt"]
+    },
+    "SqaTestPlanDoc": {
+      "title": "SqaTestPlanDoc",
+      "description": "SQA Master Test Plan under a project.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "strategy": { "type": "string", "maxLength": 2000 },
+        "scope": { "type": "string", "maxLength": 2000 },
+        "objectives": { "type": "string", "maxLength": 2000 },
+        "resources": { "type": "string", "maxLength": 1000 },
+        "scheduleStart": { "type": "string", "maxLength": 40 },
+        "scheduleEnd": { "type": "string", "maxLength": 40 },
+        "releaseTarget": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["Draft", "Active", "Completed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "ownerUid", "title", "status", "createdAt", "updatedAt"]
+    },
+    "SqaTestSuiteDoc": {
+      "title": "SqaTestSuiteDoc",
+      "description": "Categorized SQA Test Suite grouping linked test case IDs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "suiteType": { "type": "string", "maxLength": 40 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "testCaseIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "ownerUid", "name", "suiteType", "testCaseIds", "createdAt", "updatedAt"]
+    },
+    "SqaDefectDoc": {
+      "title": "SqaDefectDoc",
+      "description": "SQA Defect / Bug report with 7-state lifecycle.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bugCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "stepsToReproduce": { "type": "string", "maxLength": 2000 },
+        "expectedResult": { "type": "string", "maxLength": 1000 },
+        "actualResult": { "type": "string", "maxLength": 1000 },
+        "severity": { "type": "string", "maxLength": 24 },
+        "priority": { "type": "string", "maxLength": 24 },
+        "assignedDeveloper": { "type": "string", "maxLength": 120 },
+        "reportedBy": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["New", "Assigned", "In Progress", "Fixed", "Retest", "Reopened", "Closed"] },
+        "linkedTestCaseId": { "type": "string", "maxLength": 128 },
+        "linkedRequirementId": { "type": "string", "maxLength": 128 },
+        "resolutionNotes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "bugCode", "projectId", "ownerUid", "title", "severity", "priority", "status", "createdAt", "updatedAt"]
+    },
+    "SqaRequirementDoc": {
+      "title": "SqaRequirementDoc",
+      "description": "Requirements Traceability Matrix (RTM) item linked to test cases and defects.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reqCode": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["Business", "Functional"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "module": { "type": "string", "maxLength": 120 },
+        "priority": { "type": "string", "maxLength": 24 },
+        "linkedTestCaseIds": { "type": "array" },
+        "linkedDefectIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "reqCode", "projectId", "ownerUid", "type", "title", "module", "priority", "linkedTestCaseIds", "linkedDefectIds", "createdAt", "updatedAt"]
+    },
+    "SqaReleaseDoc": {
+      "title": "SqaReleaseDoc",
+      "description": "Release readiness and QA sign-off record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "buildNumber": { "type": "string", "maxLength": 60 },
+        "environment": { "type": "string", "maxLength": 32 },
+        "targetDate": { "type": "string", "maxLength": 40 },
+        "buildVerified": { "type": "boolean" },
+        "readinessStatus": { "type": "string", "maxLength": 24 },
+        "approvalStatus": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "approvedBy": { "type": "string", "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "ownerUid", "version", "name", "environment", "readinessStatus", "approvalStatus", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public workspace display metadata for user."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Owner-only PII record storing verified email."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Server-provisioned administrator membership documents."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/AutomationProjectDoc" },
+      "description": "Automation & SQA project owned by a verified Firebase user."
+    },
+    "/projects/{projectId}/testCases/{testCaseId}": {
+      "schema": { "$ref": "#/entities/TestCaseDoc" },
+      "description": "Test cases scoped under parent project."
+    },
+    "/projects/{projectId}/runs/{runId}": {
+      "schema": { "$ref": "#/entities/TestRunDoc" },
+      "description": "Execution records scoped under parent project."
+    },
+    "/projects/{projectId}/sqaPlans/{planId}": {
+      "schema": { "$ref": "#/entities/SqaTestPlanDoc" },
+      "description": "Test plans scoped under parent project."
+    },
+    "/projects/{projectId}/sqaSuites/{suiteId}": {
+      "schema": { "$ref": "#/entities/SqaTestSuiteDoc" },
+      "description": "Test suites scoped under parent project."
+    },
+    "/projects/{projectId}/sqaDefects/{defectId}": {
+      "schema": { "$ref": "#/entities/SqaDefectDoc" },
+      "description": "Defects scoped under parent project."
+    },
+    "/projects/{projectId}/sqaRequirements/{reqId}": {
+      "schema": { "$ref": "#/entities/SqaRequirementDoc" },
+      "description": "RTM requirements scoped under parent project."
+    },
+    "/projects/{projectId}/sqaReleases/{releaseId}": {
+      "schema": { "$ref": "#/entities/SqaReleaseDoc" },
+      "description": "Release gates scoped under parent project."
+    }
+  }
+}

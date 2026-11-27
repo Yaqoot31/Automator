@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, ShieldAlert } from 'lucide-react';
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  type User as FirebaseUser,
+} from 'firebase/auth';
 import type {
   AppSettings,
   AutomationFramework,
@@ -33,6 +39,7 @@ import {
   deleteSqaSuiteApi,
   duplicateProjectApi,
   enhanceAiTestsApi,
+  firebaseGoogleLoginApi,
   getSessionApi,
   getSqaOverviewApi,
   listProjectsApi,
@@ -49,6 +56,28 @@ import {
   startTestRunApi,
   updateProjectApi,
 } from '@/lib/api';
+import { auth, googleAuthProvider } from '@/lib/firebase';
+import {
+  deleteProjectFromFirestore,
+  deleteSqaDefectFromFirestore,
+  deleteSqaPlanFromFirestore,
+  deleteSqaReleaseFromFirestore,
+  deleteSqaRequirementFromFirestore,
+  deleteSqaSuiteFromFirestore,
+  subscribeToFirestoreProjectCount,
+  syncFullWorkspaceToFirestore,
+  syncProjectSheetMetaToFirestore,
+  syncUserProfileToFirestore,
+  upsertProjectToFirestore,
+  upsertSqaDefectToFirestore,
+  upsertSqaPlanToFirestore,
+  upsertSqaReleaseToFirestore,
+  upsertSqaRequirementToFirestore,
+  upsertSqaSuiteToFirestore,
+  upsertTestCasesToFirestore,
+  upsertTestRunToFirestore,
+  type FirestoreCollectionSummary,
+} from '@/lib/firebaseSync';
 import { AuthGate } from '@/components/AuthGate';
 import { TopNavAndSidebar } from '@/components/TopNavAndSidebar';
 import { AnalyticsDashboardView } from '@/views/AnalyticsDashboardView';
@@ -110,6 +139,17 @@ export default function App() {
   const [analysisLogs, setAnalysisLogs] = useState<LiveAnalysisLog[]>([]);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
+
+  // Firebase Cloud Database & Auth state
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [firestoreLiveProjects, setFirestoreLiveProjects] = useState<number | null>(null);
+
+  const mirrorFirestore = useCallback((task: () => Promise<unknown>) => {
+    if (!auth.currentUser?.emailVerified) return;
+    task().catch((err) => {
+      console.warn('Cloud Firestore sync failed:', err);
+    });
+  }, []);
 
   // Sync theme, accent, reducedMotion, fontScale
   useEffect(() => {
@@ -186,6 +226,31 @@ export default function App() {
     };
   }, [refreshWorkspaceData]);
 
+  // Listen to Firebase Auth state and live Firestore project count
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (!fbUser || !fbUser.emailVerified) {
+        setFirestoreLiveProjects(null);
+      }
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseUser?.emailVerified) {
+      return;
+    }
+    if (user) {
+      mirrorFirestore(() => syncUserProfileToFirestore(user));
+    }
+    const unsubscribeCount = subscribeToFirestoreProjectCount(
+      (count) => setFirestoreLiveProjects(count),
+      () => {}
+    );
+    return () => unsubscribeCount();
+  }, [firebaseUser, user, mirrorFirestore]);
+
   // Real-time WebSocket subscription for analysis & test execution
   useEffect(() => {
     if (!token) return;
@@ -216,6 +281,7 @@ export default function App() {
           const run = data.payload as TestRunRecord;
           setActiveRun(run);
           setRuns((prev) => [run, ...prev.filter((r) => r.id !== run.id)]);
+          mirrorFirestore(() => upsertTestRunToFirestore(run));
         } else if (data.type === 'run:log') {
           const entry = data.payload as TestRunLogEntry;
           const runId = String(data.runId);
@@ -247,6 +313,7 @@ export default function App() {
           const finished = data.payload as TestRunRecord;
           setActiveRun(finished);
           setRuns((prev) => [finished, ...prev.filter((r) => r.id !== finished.id)]);
+          mirrorFirestore(() => upsertTestRunToFirestore(finished));
           refreshWorkspaceData(token).catch(() => {});
         }
       } catch {
@@ -255,7 +322,7 @@ export default function App() {
     };
 
     return () => ws.close();
-  }, [token, refreshWorkspaceData]);
+  }, [token, refreshWorkspaceData, mirrorFirestore]);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || null;
 
@@ -311,6 +378,10 @@ export default function App() {
       });
 
       upsertProjectInState(created.project);
+      mirrorFirestore(async () => {
+        await upsertProjectToFirestore(created.project);
+        await upsertTestCasesToFirestore(created.project.id, created.project.testCases);
+      });
       setAnalysisProgress(100);
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Website analysis failed.');
@@ -323,6 +394,10 @@ export default function App() {
     if (!token || !activeProject) return;
     const res = await updateProjectApi(token, activeProject.id, { testCases });
     upsertProjectInState(res.project);
+    mirrorFirestore(async () => {
+      await upsertProjectToFirestore(res.project);
+      await upsertTestCasesToFirestore(res.project.id, res.project.testCases);
+    });
   };
 
   const handleUpdateProjectPatch = async (
@@ -332,12 +407,31 @@ export default function App() {
     if (!token) return;
     const res = await updateProjectApi(token, projectId, patch);
     upsertProjectInState(res.project);
+    const hasSheetUpdate =
+      patch.googleSheetId !== undefined ||
+      patch.googleSheetUrl !== undefined ||
+      patch.googleSheetTitle !== undefined ||
+      patch.googleSheetLastSync !== undefined;
+    mirrorFirestore(async () => {
+      if (hasSheetUpdate) {
+        await syncProjectSheetMetaToFirestore(res.project.id, {
+          googleSheetId: res.project.googleSheetId,
+          googleSheetUrl: res.project.googleSheetUrl,
+          googleSheetTitle: res.project.googleSheetTitle,
+          googleSheetLastSync: res.project.googleSheetLastSync,
+        });
+      }
+      if (!hasSheetUpdate || Object.keys(patch).length > 4) {
+        await upsertProjectToFirestore(res.project);
+      }
+    });
   };
 
   const handleSaveFiles = async (files: ProjectFile[]) => {
     if (!token || !activeProject) return;
     const res = await updateProjectApi(token, activeProject.id, { files });
     upsertProjectInState(res.project);
+    mirrorFirestore(() => upsertProjectToFirestore(res.project));
   };
 
   const handleRegenerate = async (
@@ -354,12 +448,17 @@ export default function App() {
       selectedFrameworks
     );
     upsertProjectInState(res.project);
+    mirrorFirestore(async () => {
+      await upsertProjectToFirestore(res.project);
+      await upsertTestCasesToFirestore(res.project.id, res.project.testCases);
+    });
   };
 
   const handleSaveConfig = async (config: ProjectConfig) => {
     if (!token || !activeProject) return;
     const res = await updateProjectApi(token, activeProject.id, { config });
     upsertProjectInState(res.project);
+    mirrorFirestore(() => upsertProjectToFirestore(res.project));
   };
 
   const handleStartRun = async (testCaseIds?: string[]) => {
@@ -367,6 +466,7 @@ export default function App() {
     const res = await startTestRunApi(token, activeProject.id, testCaseIds);
     setActiveRun(res.run);
     setActiveView('runner');
+    mirrorFirestore(() => upsertTestRunToFirestore(res.run));
   };
 
   const handleCancelRun = async (runId: string) => {
@@ -378,6 +478,10 @@ export default function App() {
     if (!token || !activeProject) return;
     const res = await enhanceAiTestsApi(token, activeProject.id, focus);
     upsertProjectInState(res.project);
+    mirrorFirestore(async () => {
+      await upsertProjectToFirestore(res.project);
+      await upsertTestCasesToFirestore(res.project.id, res.project.testCases);
+    });
   };
 
   const handleLogDefectFromCase = (tc: TestCase) => {
@@ -408,8 +512,44 @@ export default function App() {
     handleLogDefectFromCase(syntheticCase);
   };
 
+  const handleConnectFirebaseGoogle = async () => {
+    const result = await signInWithPopup(auth, googleAuthProvider);
+    const idToken = await result.user.getIdToken();
+    const res = await firebaseGoogleLoginApi(idToken);
+    setUser(res.user);
+    setToken(res.token);
+    setFirebaseUser(result.user);
+    await syncUserProfileToFirestore(res.user);
+    await refreshWorkspaceData(res.token);
+  };
+
+  const handleDisconnectFirebase = async () => {
+    await signOut(auth);
+    setFirebaseUser(null);
+    setFirestoreLiveProjects(null);
+  };
+
+  const handleSyncWorkspaceToFirestore = async (): Promise<FirestoreCollectionSummary> => {
+    if (!user) {
+      throw new Error('Sign in before syncing workspace to Cloud Firestore.');
+    }
+    return syncFullWorkspaceToFirestore({
+      user,
+      projects,
+      runs,
+      plans: sqaPlans,
+      suites: sqaSuites,
+      defects: sqaDefects,
+      requirements: sqaRequirements,
+      releases: sqaReleases,
+    });
+  };
+
   const handleSignOut = async () => {
     await logoutApi(token).catch(() => {});
+    await signOut(auth).catch(() => {});
+    setFirebaseUser(null);
+    setFirestoreLiveProjects(null);
     setUser(null);
     setToken(null);
     setProjects([]);
@@ -593,27 +733,45 @@ export default function App() {
               onSavePlan={async (plan) => {
                 const res = await saveSqaPlanApi(token, plan);
                 setSqaPlans((prev) => [res.plan, ...prev.filter((p) => p.id !== res.plan.id)]);
+                mirrorFirestore(() => upsertSqaPlanToFirestore(res.plan));
               }}
               onDeletePlan={async (id) => {
+                const targetProjectId =
+                  sqaPlans.find((p) => p.id === id)?.projectId || activeProjectId;
                 await deleteSqaPlanApi(token, id);
                 setSqaPlans((prev) => prev.filter((p) => p.id !== id));
+                if (targetProjectId) {
+                  mirrorFirestore(() => deleteSqaPlanFromFirestore(targetProjectId, id));
+                }
               }}
               onSaveSuite={async (suite) => {
                 const res = await saveSqaSuiteApi(token, suite);
                 setSqaSuites((prev) => [res.suite, ...prev.filter((s) => s.id !== res.suite.id)]);
+                mirrorFirestore(() => upsertSqaSuiteToFirestore(res.suite));
               }}
               onDeleteSuite={async (id) => {
+                const targetProjectId =
+                  sqaSuites.find((s) => s.id === id)?.projectId || activeProjectId;
                 await deleteSqaSuiteApi(token, id);
                 setSqaSuites((prev) => prev.filter((s) => s.id !== id));
+                if (targetProjectId) {
+                  mirrorFirestore(() => deleteSqaSuiteFromFirestore(targetProjectId, id));
+                }
               }}
               onSaveDefect={async (defect) => {
                 const res = await saveSqaDefectApi(token, defect);
                 setSqaDefects((prev) => [res.defect, ...prev.filter((d) => d.id !== res.defect.id)]);
                 setPrefillDefectCase(null);
+                mirrorFirestore(() => upsertSqaDefectToFirestore(res.defect));
               }}
               onDeleteDefect={async (id) => {
+                const targetProjectId =
+                  sqaDefects.find((d) => d.id === id)?.projectId || activeProjectId;
                 await deleteSqaDefectApi(token, id);
                 setSqaDefects((prev) => prev.filter((d) => d.id !== id));
+                if (targetProjectId) {
+                  mirrorFirestore(() => deleteSqaDefectFromFirestore(targetProjectId, id));
+                }
               }}
               onSaveRequirement={async (req) => {
                 const res = await saveSqaRequirementApi(token, req);
@@ -621,10 +779,16 @@ export default function App() {
                   res.requirement,
                   ...prev.filter((r) => r.id !== res.requirement.id),
                 ]);
+                mirrorFirestore(() => upsertSqaRequirementToFirestore(res.requirement));
               }}
               onDeleteRequirement={async (id) => {
+                const targetProjectId =
+                  sqaRequirements.find((r) => r.id === id)?.projectId || activeProjectId;
                 await deleteSqaRequirementApi(token, id);
                 setSqaRequirements((prev) => prev.filter((r) => r.id !== id));
+                if (targetProjectId) {
+                  mirrorFirestore(() => deleteSqaRequirementFromFirestore(targetProjectId, id));
+                }
               }}
               onSaveRelease={async (rel) => {
                 const res = await saveSqaReleaseApi(token, rel);
@@ -632,10 +796,16 @@ export default function App() {
                   res.release,
                   ...prev.filter((r) => r.id !== res.release.id),
                 ]);
+                mirrorFirestore(() => upsertSqaReleaseToFirestore(res.release));
               }}
               onDeleteRelease={async (id) => {
+                const targetProjectId =
+                  sqaReleases.find((r) => r.id === id)?.projectId || activeProjectId;
                 await deleteSqaReleaseApi(token, id);
                 setSqaReleases((prev) => prev.filter((r) => r.id !== id));
+                if (targetProjectId) {
+                  mirrorFirestore(() => deleteSqaReleaseFromFirestore(targetProjectId, id));
+                }
               }}
               onUpdateTestCases={handleUpdateTestCases}
               onNavigate={setActiveView}
@@ -690,14 +860,23 @@ export default function App() {
                   approach: 'pom',
                 });
                 upsertProjectInState(res.project);
+                mirrorFirestore(async () => {
+                  await upsertProjectToFirestore(res.project);
+                  await upsertTestCasesToFirestore(res.project.id, res.project.testCases);
+                });
               }}
               onRenameProject={async (id, name, description) => {
                 const res = await updateProjectApi(token, id, { name, description });
                 upsertProjectInState(res.project);
+                mirrorFirestore(() => upsertProjectToFirestore(res.project));
               }}
               onDuplicateProject={async (id) => {
                 const res = await duplicateProjectApi(token, id);
                 upsertProjectInState(res.project);
+                mirrorFirestore(async () => {
+                  await upsertProjectToFirestore(res.project);
+                  await upsertTestCasesToFirestore(res.project.id, res.project.testCases);
+                });
               }}
               onDeleteProject={async (id) => {
                 await deleteProjectApi(token, id);
@@ -708,6 +887,7 @@ export default function App() {
                   }
                   return next;
                 });
+                mirrorFirestore(() => deleteProjectFromFirestore(id));
               }}
               onSaveSecrets={async (id, secrets) => {
                 const res = await saveProjectSecretsApi(token, id, secrets);
@@ -730,7 +910,17 @@ export default function App() {
               token={token}
               settings={settings}
               user={user}
-              onUserUpdated={setUser}
+              projectsCount={projects.length}
+              firestoreLiveProjects={firestoreLiveProjects}
+              firebaseUserEmail={firebaseUser?.email || null}
+              firebaseEmailVerified={Boolean(firebaseUser?.emailVerified)}
+              onConnectFirebaseGoogle={handleConnectFirebaseGoogle}
+              onDisconnectFirebase={handleDisconnectFirebase}
+              onSyncWorkspaceToFirestore={handleSyncWorkspaceToFirestore}
+              onUserUpdated={(updatedUser) => {
+                setUser(updatedUser);
+                mirrorFirestore(() => syncUserProfileToFirestore(updatedUser));
+              }}
               onUpdateSettings={updateSettings}
               onResetSettings={() => setSettings(DEFAULT_SETTINGS)}
             />

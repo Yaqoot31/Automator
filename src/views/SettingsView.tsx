@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   RotateCcw,
   CheckCircle2,
@@ -6,6 +6,12 @@ import {
   UserCheck,
   KeyRound,
   Save,
+  Database,
+  Cloud,
+  RefreshCw,
+  Link2,
+  Unlink,
+  Loader2,
 } from 'lucide-react';
 import type {
   AccentColor,
@@ -22,11 +28,29 @@ import {
   updateProfileApi,
   verifyEmailApi,
 } from '@/lib/api';
+import {
+  FIREBASE_META,
+  getFirebaseConnectionState,
+  subscribeFirebaseConnection,
+  testConnection,
+  type FirebaseConnectionState,
+} from '@/lib/firebase';
+import {
+  fetchFirestoreCollectionSummary,
+  type FirestoreCollectionSummary,
+} from '@/lib/firebaseSync';
 
 interface SettingsViewProps {
   token: string;
   settings: AppSettings;
   user: UserProfile;
+  projectsCount?: number;
+  firestoreLiveProjects?: number | null;
+  firebaseUserEmail?: string | null;
+  firebaseEmailVerified?: boolean;
+  onConnectFirebaseGoogle?: () => Promise<void>;
+  onDisconnectFirebase?: () => Promise<void>;
+  onSyncWorkspaceToFirestore?: () => Promise<FirestoreCollectionSummary>;
   onUserUpdated: (user: UserProfile) => void;
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onResetSettings: () => void;
@@ -50,6 +74,13 @@ export function SettingsView({
   token,
   settings,
   user,
+  projectsCount = 0,
+  firestoreLiveProjects = null,
+  firebaseUserEmail = null,
+  firebaseEmailVerified = false,
+  onConnectFirebaseGoogle,
+  onDisconnectFirebase,
+  onSyncWorkspaceToFirestore,
   onUserUpdated,
   onUpdateSettings,
   onResetSettings,
@@ -71,6 +102,32 @@ export function SettingsView({
   const [pwLoading, setPwLoading] = useState(false);
   const [pwNotice, setPwNotice] = useState<string | null>(null);
   const [pwError, setPwError] = useState<string | null>(null);
+
+  const [fbConn, setFbConn] = useState<FirebaseConnectionState>(getFirebaseConnectionState);
+  const [testingConn, setTestingConn] = useState(false);
+  const [cloudSummary, setCloudSummary] = useState<FirestoreCollectionSummary | null>(null);
+  const [cloudBusy, setCloudBusy] = useState<'connect' | 'disconnect' | 'sync' | 'refresh' | null>(
+    null
+  );
+  const [cloudNotice, setCloudNotice] = useState<string | null>(null);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return subscribeFirebaseConnection(setFbConn);
+  }, []);
+
+  useEffect(() => {
+    if (!firebaseEmailVerified) {
+      return;
+    }
+    fetchFirestoreCollectionSummary()
+      .then(setCloudSummary)
+      .catch(() => {
+        // Defer error display to explicit refresh/sync actions
+      });
+  }, [firebaseEmailVerified]);
+
+  const activeCloudSummary = firebaseEmailVerified ? cloudSummary : null;
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,6 +202,83 @@ export function SettingsView({
       setPwError(err instanceof Error ? err.message : 'Could not change password.');
     } finally {
       setPwLoading(false);
+    }
+  };
+
+  const handleTestFirebaseConnection = async () => {
+    setTestingConn(true);
+    setCloudError(null);
+    try {
+      const next = await testConnection();
+      setFbConn(next);
+      setCloudNotice(next.detail || 'Connection check completed.');
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Firebase connection test failed.');
+    } finally {
+      setTestingConn(false);
+    }
+  };
+
+  const handleConnectFirebase = async () => {
+    if (!onConnectFirebaseGoogle) return;
+    setCloudBusy('connect');
+    setCloudError(null);
+    setCloudNotice(null);
+    try {
+      await onConnectFirebaseGoogle();
+      setCloudNotice('Google / Firebase account linked to workspace.');
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Could not link Google / Firebase.');
+    } finally {
+      setCloudBusy(null);
+    }
+  };
+
+  const handleDisconnectFirebase = async () => {
+    if (!onDisconnectFirebase) return;
+    setCloudBusy('disconnect');
+    setCloudError(null);
+    setCloudNotice(null);
+    try {
+      await onDisconnectFirebase();
+      setCloudSummary(null);
+      setCloudNotice('Firebase Auth session disconnected.');
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Could not disconnect Firebase.');
+    } finally {
+      setCloudBusy(null);
+    }
+  };
+
+  const handleSyncCloudWorkspace = async () => {
+    if (!onSyncWorkspaceToFirestore) return;
+    setCloudBusy('sync');
+    setCloudError(null);
+    setCloudNotice(null);
+    try {
+      const summary = await onSyncWorkspaceToFirestore();
+      setCloudSummary(summary);
+      setCloudNotice(
+        `Synced ${summary.projects} project(s), ${summary.testCases} test case(s), and ${summary.sqaDefects} defect(s) to Cloud Firestore.`
+      );
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Cloud Firestore sync failed.');
+    } finally {
+      setCloudBusy(null);
+    }
+  };
+
+  const handleRefreshCloudCounts = async () => {
+    setCloudBusy('refresh');
+    setCloudError(null);
+    try {
+      const summary = await fetchFirestoreCollectionSummary();
+      setCloudSummary(summary);
+      setCloudNotice('Refreshed live Cloud Firestore collection metrics.');
+    } catch (err) {
+      setCloudError(err instanceof Error ? err.message : 'Could not read Firestore collections.');
+    } finally {
+      setCloudBusy(null);
     }
   };
 
@@ -354,6 +488,176 @@ export function SettingsView({
             </button>
           </div>
         </form>
+      </section>
+
+      {/* Firebase Cloud Database & Backend */}
+      <section className="surface-panel rounded-2xl p-4 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Database className="w-4 h-4 text-[var(--accent-primary)]" />
+            <span>Firebase Cloud Database &amp; Backend</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${
+                fbConn.status === 'connected'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-[var(--status-success)]'
+                  : fbConn.status === 'checking'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-[var(--status-warning)]'
+                    : 'border-red-500/30 bg-red-500/10 text-red-500'
+              }`}
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>
+                {fbConn.status === 'connected'
+                  ? 'Connected'
+                  : fbConn.status === 'checking'
+                    ? 'Checking'
+                    : fbConn.status === 'offline'
+                      ? 'Offline'
+                      : 'Error'}
+              </span>
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="rounded-xl surface-elevated p-3 space-y-1">
+            <div className="text-[var(--text-muted)]">Firebase Project ID</div>
+            <div className="font-mono text-[var(--text-main)] break-all">
+              {FIREBASE_META.projectId}
+            </div>
+          </div>
+          <div className="rounded-xl surface-elevated p-3 space-y-1">
+            <div className="text-[var(--text-muted)]">Firestore Database ID</div>
+            <div className="font-mono text-[var(--text-main)] break-all">
+              {FIREBASE_META.databaseId}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl surface-elevated p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="space-y-0.5 min-w-0">
+            <div className="font-semibold text-[var(--text-main)]">
+              {firebaseEmailVerified && firebaseUserEmail
+                ? `Firebase Auth Linked: ${firebaseUserEmail}`
+                : 'Firebase Google Auth Not Linked'}
+            </div>
+            <div className="text-[var(--text-secondary)]">
+              {firebaseEmailVerified
+                ? 'Verified identity active for real-time Cloud Firestore read/write sync and backend token verification.'
+                : 'Link a verified Google account to synchronize projects, test cases, runs, and SQA records with Cloud Firestore.'}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleTestFirebaseConnection}
+              disabled={testingConn}
+              className="inline-flex items-center gap-1.5 px-3.5 min-h-[40px] rounded-xl surface-panel border hover:bg-[var(--surface-hover)] font-medium"
+            >
+              {testingConn ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5" />
+              )}
+              <span>Test Connection</span>
+            </button>
+            {firebaseEmailVerified ? (
+              <button
+                type="button"
+                onClick={handleDisconnectFirebase}
+                disabled={cloudBusy !== null}
+                className="inline-flex items-center gap-1.5 px-3.5 min-h-[40px] rounded-xl border border-red-500/30 bg-red-500/10 text-red-500 hover:bg-red-500/15 font-medium"
+              >
+                <Unlink className="w-3.5 h-3.5" />
+                <span>{cloudBusy === 'disconnect' ? 'Disconnecting...' : 'Disconnect Firebase'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectFirebase}
+                disabled={cloudBusy !== null}
+                className="inline-flex items-center gap-1.5 px-4 min-h-[40px] rounded-xl font-semibold"
+                style={{
+                  backgroundColor: 'var(--accent-primary)',
+                  color: 'var(--accent-contrast)',
+                }}
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>{cloudBusy === 'connect' ? 'Linking...' : 'Connect Google / Firebase'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {cloudError && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs text-red-500 break-words"
+          >
+            {cloudError}
+          </div>
+        )}
+        {cloudNotice && (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs text-[var(--status-success)]">
+            {cloudNotice}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+          {[
+            {
+              label: 'Projects (Live)',
+              val: firestoreLiveProjects ?? activeCloudSummary?.projects ?? 0,
+            },
+            { label: 'Test Cases', val: activeCloudSummary?.testCases ?? 0 },
+            { label: 'Test Runs', val: activeCloudSummary?.runs ?? 0 },
+            { label: 'SQA Plans', val: activeCloudSummary?.sqaPlans ?? 0 },
+            { label: 'SQA Suites', val: activeCloudSummary?.sqaSuites ?? 0 },
+            { label: 'SQA Defects', val: activeCloudSummary?.sqaDefects ?? 0 },
+            { label: 'Requirements', val: activeCloudSummary?.sqaRequirements ?? 0 },
+            { label: 'Releases', val: activeCloudSummary?.sqaReleases ?? 0 },
+          ].map((item) => (
+            <div key={item.label} className="rounded-xl surface-elevated p-3 space-y-1">
+              <div className="text-[11px] text-[var(--text-muted)] truncate">{item.label}</div>
+              <div className="font-mono text-base font-bold text-[var(--text-main)]">
+                {firebaseEmailVerified ? item.val : '—'}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 text-xs">
+          <span className="text-[var(--text-muted)]">
+            Local workspace projects ready: <span className="font-mono text-[var(--text-main)]">{projectsCount}</span>
+            {activeCloudSummary?.lastUpdatedAt ? ` · Last synced ${new Date(activeCloudSummary.lastUpdatedAt).toLocaleTimeString()}` : ''}
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRefreshCloudCounts}
+              disabled={!firebaseEmailVerified || cloudBusy !== null}
+              className="inline-flex items-center gap-1.5 px-3.5 min-h-[40px] rounded-xl surface-elevated hover:bg-[var(--surface-hover)] font-medium disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${cloudBusy === 'refresh' ? 'animate-spin' : ''}`} />
+              <span>Refresh Cloud Counts</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSyncCloudWorkspace}
+              disabled={!firebaseEmailVerified || cloudBusy !== null}
+              className="inline-flex items-center gap-1.5 px-4 min-h-[40px] rounded-xl font-semibold disabled:opacity-50"
+              style={{
+                backgroundColor: 'var(--accent-primary)',
+                color: 'var(--accent-contrast)',
+              }}
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>{cloudBusy === 'sync' ? 'Syncing...' : 'Sync Workspace to Firestore'}</span>
+            </button>
+          </div>
+        </div>
       </section>
 
       {/* Theme Mode */}

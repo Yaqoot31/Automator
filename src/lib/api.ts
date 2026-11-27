@@ -83,6 +83,13 @@ export async function loginApi(email: string, password: string, rememberMe = fal
   });
 }
 
+export async function firebaseGoogleLoginApi(idToken: string) {
+  return apiRequest<{ user: UserProfile; token: string }>('/api/auth/firebase-google', {
+    method: 'POST',
+    body: { idToken },
+  });
+}
+
 export async function registerApi(payload: {
   name: string;
   email: string;

@@ -24,6 +24,7 @@ import type {
 import { analyzeWebsite } from './server/analyzer.js';
 import { askAiAutomationAssistant, generateAiExtraTestCases } from './server/aiAssistant.js';
 import { validateProjectCode } from './server/codeValidator.js';
+import { verifyFirebaseIdToken } from './server/firebaseAuth.js';
 import {
   SCREENSHOTS_DIR,
   canAccessProject,
@@ -391,6 +392,72 @@ async function main() {
       res.json({ user, token });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Sign-in failed.' });
+    }
+  });
+
+  app.post('/api/auth/firebase-google', authLimiter, async (req, res) => {
+    try {
+      const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
+      if (!idToken) {
+        res.status(400).json({ error: 'Firebase ID token is required.' });
+        return;
+      }
+      const decoded = await verifyFirebaseIdToken(idToken);
+      const email = sanitizeText(decoded.email, 160).toLowerCase();
+      if (!email || decoded.email_verified !== true) {
+        res.status(401).json({ error: 'A verified Google email address is required.' });
+        return;
+      }
+
+      const record = await findUserByEmail(email);
+      let user: UserProfile;
+
+      if (!record) {
+        const existingTotal = await countUsers();
+        const role: UserRole =
+          existingTotal === 0 || email === 'rajpoot311210@gmail.com' ? 'admin' : 'sqa_engineer';
+        const { hash, salt } = hashPassword(crypto.randomBytes(32).toString('hex'));
+        const created = await createUser({
+          id: crypto.randomUUID(),
+          email,
+          name: sanitizeText(decoded.name, 100) || email.split('@')[0] || 'QA Engineer',
+          role,
+          passwordHash: hash,
+          passwordSalt: salt,
+        });
+        await markUserEmailVerified(created.id);
+        user = { ...created, emailVerified: true };
+      } else {
+        if (!record.emailVerified) {
+          await markUserEmailVerified(record.id);
+        }
+        user = {
+          id: record.id,
+          email: record.email,
+          name: record.name,
+          role: record.role,
+          emailVerified: true,
+          jobTitle: record.jobTitle,
+          organization: record.organization,
+          createdAt: record.createdAt,
+        };
+      }
+
+      const token = signAuthToken(
+        {
+          userId: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+        },
+        true
+      );
+      setSessionCookie(res, token, true);
+      res.json({ user, token });
+    } catch (err) {
+      res.status(401).json({
+        error: err instanceof Error ? err.message : 'Firebase Google sign-in verification failed.',
+      });
     }
   });
 

@@ -1,0 +1,595 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------- Global Security Primitives ----------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'rajpoot311210@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() ||
+        (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isStrRange(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptStrMax(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptInt(data, field) {
+      return !(field in data) || (data[field] is int && data[field] >= 0 && data[field] <= 1000000);
+    }
+
+    function isBoundedStringList(val, maxItems) {
+      return val is list && val.size() <= maxItems && (val.size() == 0 || val[0] is string);
+    }
+
+    function isProjectOwner(projectId) {
+      return isVerified() &&
+        exists(/databases/$(database)/documents/projects/$(projectId)) &&
+        get(/databases/$(database)/documents/projects/$(projectId)).data.ownerUid == request.auth.uid;
+    }
+
+    // ---------- Entity Validation Blueprints (Anti-Update-Gap) ----------
+
+    function isValidUserPublic(data) {
+      return data.keys().hasAll(['uid', 'name', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'name', 'role', 'jobTitle', 'organization', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        isStrRange(data.name, 1, 120) &&
+        data.role in ['sqa_engineer', 'qa_lead', 'developer', 'project_manager', 'viewer', 'engineer'] &&
+        isOptStrMax(data, 'jobTitle', 120) &&
+        isOptStrMax(data, 'organization', 120) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data) {
+      return data.keys().hasAll(['uid', 'email', 'emailVerified', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'emailVerified', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        isStrRange(data.email, 3, 160) &&
+        data.emailVerified is bool &&
+        data.emailVerified == request.auth.token.email_verified &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['id', 'ownerUid', 'name', 'url', 'tool', 'language', 'framework', 'approach', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerUid', 'name', 'description', 'url', 'tool', 'language', 'framework',
+          'selectedFrameworks', 'approach', 'testCaseCount', 'fileCount', 'inspectedPagesCount',
+          'discoveredUrlsCount', 'coverageScope', 'googleSheetId', 'googleSheetUrl',
+          'googleSheetTitle', 'googleSheetLastSync', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.name, 1, 120) &&
+        isOptStrMax(data, 'description', 400) &&
+        isStrRange(data.url, 1, 500) &&
+        isStrRange(data.tool, 1, 32) &&
+        isStrRange(data.language, 1, 32) &&
+        isStrRange(data.framework, 1, 48) &&
+        (!( 'selectedFrameworks' in data ) || isBoundedStringList(data.selectedFrameworks, 12)) &&
+        isStrRange(data.approach, 1, 32) &&
+        isOptInt(data, 'testCaseCount') &&
+        isOptInt(data, 'fileCount') &&
+        isOptInt(data, 'inspectedPagesCount') &&
+        isOptInt(data, 'discoveredUrlsCount') &&
+        isOptStrMax(data, 'coverageScope', 40) &&
+        isOptStrMax(data, 'googleSheetId', 200) &&
+        isOptStrMax(data, 'googleSheetUrl', 500) &&
+        isOptStrMax(data, 'googleSheetTitle', 200) &&
+        isOptStrMax(data, 'googleSheetLastSync', 80) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTestCase(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerUid', 'code', 'title', 'category', 'testingType',
+          'priority', 'severity', 'status', 'sqaStatus', 'automationStatus', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerUid', 'code', 'module', 'title', 'scenario',
+          'preconditions', 'testData', 'expectedResult', 'actualResult', 'comments',
+          'category', 'testingType', 'priority', 'severity', 'status', 'sqaStatus',
+          'automationStatus', 'pagePath', 'enabled', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.code, 1, 40) &&
+        isOptStrMax(data, 'module', 120) &&
+        isStrRange(data.title, 1, 200) &&
+        isOptStrMax(data, 'scenario', 1000) &&
+        isOptStrMax(data, 'preconditions', 500) &&
+        isOptStrMax(data, 'testData', 500) &&
+        isOptStrMax(data, 'expectedResult', 1000) &&
+        isOptStrMax(data, 'actualResult', 1000) &&
+        isOptStrMax(data, 'comments', 1000) &&
+        isStrRange(data.category, 1, 40) &&
+        isStrRange(data.testingType, 1, 40) &&
+        data.priority in ['Critical', 'High', 'Medium', 'Low'] &&
+        data.severity in ['Blocker', 'Critical', 'Major', 'Minor', 'Trivial'] &&
+        data.status in ['pending', 'passed', 'failed', 'skipped'] &&
+        data.sqaStatus in ['Pass', 'Fail', 'Blocked', 'Not Run'] &&
+        data.automationStatus in ['Automated', 'Manual', 'In Progress', 'Not Automated'] &&
+        isOptStrMax(data, 'pagePath', 300) &&
+        (!('enabled' in data) || data.enabled is bool) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTestRun(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerUid', 'projectName', 'browser', 'viewport',
+          'status', 'totalTests', 'passed', 'failed', 'skipped', 'durationMs', 'startedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerUid', 'projectName', 'browser', 'viewport', 'headless',
+          'status', 'totalTests', 'passed', 'failed', 'skipped', 'durationMs',
+          'startedAt', 'completedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.projectName, 1, 120) &&
+        isStrRange(data.browser, 1, 32) &&
+        isStrRange(data.viewport, 1, 32) &&
+        (!('headless' in data) || data.headless is bool) &&
+        data.status in ['queued', 'running', 'completed', 'failed', 'cancelled'] &&
+        data.totalTests is int && data.totalTests >= 0 && data.totalTests <= 100000 &&
+        data.passed is int && data.passed >= 0 && data.passed <= 100000 &&
+        data.failed is int && data.failed >= 0 && data.failed <= 100000 &&
+        data.skipped is int && data.skipped >= 0 && data.skipped <= 100000 &&
+        data.durationMs is int && data.durationMs >= 0 && data.durationMs <= 86400000 &&
+        isStrRange(data.startedAt, 1, 64) &&
+        isOptStrMax(data, 'completedAt', 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSqaPlan(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerUid', 'title', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerUid', 'title', 'strategy', 'scope', 'objectives',
+          'resources', 'scheduleStart', 'scheduleEnd', 'releaseTarget', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.title, 1, 160) &&
+        isOptStrMax(data, 'strategy', 2000) &&
+        isOptStrMax(data, 'scope', 2000) &&
+        isOptStrMax(data, 'objectives', 2000) &&
+        isOptStrMax(data, 'resources', 1000) &&
+        isOptStrMax(data, 'scheduleStart', 40) &&
+        isOptStrMax(data, 'scheduleEnd', 40) &&
+        isOptStrMax(data, 'releaseTarget', 80) &&
+        data.status in ['Draft', 'Active', 'Completed'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSqaSuite(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerUid', 'name', 'suiteType', 'testCaseIds', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'projectId', 'ownerUid', 'name', 'suiteType', 'description', 'testCaseIds', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.name, 1, 140) &&
+        isStrRange(data.suiteType, 1, 40) &&
+        isOptStrMax(data, 'description', 1000) &&
+        isBoundedStringList(data.testCaseIds, 200) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSqaDefect(data) {
+      return data.keys().hasAll(['id', 'bugCode', 'projectId', 'ownerUid', 'title', 'severity', 'priority', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'bugCode', 'projectId', 'ownerUid', 'title', 'description', 'stepsToReproduce',
+          'expectedResult', 'actualResult', 'severity', 'priority', 'assignedDeveloper',
+          'reportedBy', 'status', 'linkedTestCaseId', 'linkedRequirementId', 'resolutionNotes',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isStrRange(data.bugCode, 1, 24) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.title, 1, 200) &&
+        isOptStrMax(data, 'description', 2000) &&
+        isOptStrMax(data, 'stepsToReproduce', 2000) &&
+        isOptStrMax(data, 'expectedResult', 1000) &&
+        isOptStrMax(data, 'actualResult', 1000) &&
+        isStrRange(data.severity, 1, 24) &&
+        isStrRange(data.priority, 1, 24) &&
+        isOptStrMax(data, 'assignedDeveloper', 120) &&
+        isOptStrMax(data, 'reportedBy', 120) &&
+        data.status in ['New', 'Assigned', 'In Progress', 'Fixed', 'Retest', 'Reopened', 'Closed'] &&
+        isOptStrMax(data, 'linkedTestCaseId', 128) &&
+        isOptStrMax(data, 'linkedRequirementId', 128) &&
+        isOptStrMax(data, 'resolutionNotes', 1000) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSqaRequirement(data) {
+      return data.keys().hasAll(['id', 'reqCode', 'projectId', 'ownerUid', 'type', 'title', 'module', 'priority', 'linkedTestCaseIds', 'linkedDefectIds', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'reqCode', 'projectId', 'ownerUid', 'type', 'title', 'description',
+          'module', 'priority', 'linkedTestCaseIds', 'linkedDefectIds', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isStrRange(data.reqCode, 1, 24) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        data.type in ['Business', 'Functional'] &&
+        isStrRange(data.title, 1, 200) &&
+        isOptStrMax(data, 'description', 2000) &&
+        isStrRange(data.module, 1, 120) &&
+        isStrRange(data.priority, 1, 24) &&
+        isBoundedStringList(data.linkedTestCaseIds, 100) &&
+        isBoundedStringList(data.linkedDefectIds, 100) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSqaRelease(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerUid', 'version', 'name', 'environment', 'readinessStatus', 'approvalStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerUid', 'version', 'name', 'buildNumber', 'environment',
+          'targetDate', 'buildVerified', 'readinessStatus', 'approvalStatus', 'approvedBy',
+          'notes', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.projectId) &&
+        isValidId(data.ownerUid) &&
+        data.ownerUid == request.auth.uid &&
+        isStrRange(data.version, 1, 40) &&
+        isStrRange(data.name, 1, 140) &&
+        isOptStrMax(data, 'buildNumber', 60) &&
+        isStrRange(data.environment, 1, 32) &&
+        isOptStrMax(data, 'targetDate', 40) &&
+        (!('buildVerified' in data) || data.buildVerified is bool) &&
+        isStrRange(data.readinessStatus, 1, 24) &&
+        data.approvalStatus in ['Pending', 'Approved', 'Rejected'] &&
+        isOptStrMax(data, 'approvedBy', 120) &&
+        isOptStrMax(data, 'notes', 2000) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // ---------- Connection Probe ----------
+    match /test/connection {
+      allow get: if isSignedIn();
+      allow list, write: if false;
+    }
+
+    // ---------- Admin Collection (Read-Only Client) ----------
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list, write: if false;
+    }
+
+    // ---------- Users & PII Isolation ----------
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId) &&
+        isValidUserPublic(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && isValidUserPublic(incoming()) &&
+        (isOwner(userId) || isAdmin()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'jobTitle', 'organization', 'updatedAt'])) ||
+          isAdmin()
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/info {
+        allow get: if isValidId(userId) && isOwner(userId);
+        allow list: if false;
+        allow create: if isVerified() && isValidId(userId) && isOwner(userId) &&
+          isValidUserPrivate(incoming()) &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isOwner(userId) &&
+          isValidUserPrivate(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'emailVerified', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    // ---------- Automation Projects & Master-Gated Subcollections ----------
+    match /projects/{projectId} {
+      allow get: if isVerified() && isValidId(projectId) && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerified() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().id == projectId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        (existing().ownerUid == request.auth.uid || isAdmin()) &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action: Update Project Metadata / Framework / Coverage Counts
+          (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'description', 'url', 'tool', 'language', 'framework', 'selectedFrameworks',
+            'approach', 'testCaseCount', 'fileCount', 'inspectedPagesCount', 'discoveredUrlsCount',
+            'coverageScope', 'updatedAt'
+          ])) ||
+          // Action: Link or Sync Google Sheet Metadata
+          (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+            'googleSheetId', 'googleSheetUrl', 'googleSheetTitle', 'googleSheetLastSync', 'updatedAt'
+          ])) ||
+          isAdmin()
+        );
+      allow delete: if isVerified() && isValidId(projectId) && (existing().ownerUid == request.auth.uid || isAdmin());
+
+      // Subcollection: Test Cases
+      match /testCases/{testCaseId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(testCaseId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(testCaseId) &&
+          isValidTestCase(incoming()) &&
+          incoming().id == testCaseId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(testCaseId) &&
+          isValidTestCase(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            // Action: Update Execution Status / Results / Metadata
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'module', 'title', 'scenario', 'preconditions', 'testData', 'expectedResult',
+              'actualResult', 'comments', 'category', 'testingType', 'priority', 'severity',
+              'status', 'sqaStatus', 'automationStatus', 'pagePath', 'enabled', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(testCaseId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: Test Runs
+      match /runs/{runId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(runId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(runId) &&
+          isValidTestRun(incoming()) &&
+          incoming().id == runId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(runId) &&
+          isValidTestRun(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          (existing().status in ['queued', 'running'] || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'totalTests', 'passed', 'failed', 'skipped', 'durationMs', 'completedAt', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(runId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: SQA Plans
+      match /sqaPlans/{planId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(planId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(planId) &&
+          isValidSqaPlan(incoming()) &&
+          incoming().id == planId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(planId) &&
+          isValidSqaPlan(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          (existing().status != 'Completed' || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'strategy', 'scope', 'objectives', 'resources',
+              'scheduleStart', 'scheduleEnd', 'releaseTarget', 'status', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(planId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: SQA Suites
+      match /sqaSuites/{suiteId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(suiteId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(suiteId) &&
+          isValidSqaSuite(incoming()) &&
+          incoming().id == suiteId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(suiteId) &&
+          isValidSqaSuite(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'suiteType', 'description', 'testCaseIds', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(suiteId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: SQA Defects
+      match /sqaDefects/{defectId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(defectId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(defectId) &&
+          isValidSqaDefect(incoming()) &&
+          incoming().id == defectId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(defectId) &&
+          isValidSqaDefect(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          (existing().status != 'Closed' || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            // Action: Triage & Lifecycle Status Transition
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'assignedDeveloper', 'severity', 'priority', 'resolutionNotes', 'updatedAt'
+            ])) ||
+            // Action: Update Bug Details
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'description', 'stepsToReproduce', 'expectedResult', 'actualResult',
+              'linkedTestCaseId', 'linkedRequirementId', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(defectId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: SQA Requirements (RTM)
+      match /sqaRequirements/{reqId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(reqId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(reqId) &&
+          isValidSqaRequirement(incoming()) &&
+          incoming().id == reqId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(reqId) &&
+          isValidSqaRequirement(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'type', 'title', 'description', 'module', 'priority', 'linkedTestCaseIds', 'linkedDefectIds', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(reqId) && (isProjectOwner(projectId) || isAdmin());
+      }
+
+      // Subcollection: SQA Releases
+      match /sqaReleases/{releaseId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(releaseId) && (isProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (resource.data.ownerUid == request.auth.uid || isBootstrappedAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(releaseId) &&
+          isValidSqaRelease(incoming()) &&
+          incoming().id == releaseId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(releaseId) &&
+          isValidSqaRelease(incoming()) &&
+          (isProjectOwner(projectId) || isAdmin()) &&
+          (existing().approvalStatus == 'Pending' || isAdmin()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+              'version', 'name', 'buildNumber', 'environment', 'targetDate',
+              'buildVerified', 'readinessStatus', 'approvalStatus', 'approvedBy', 'notes', 'updatedAt'
+            ])) ||
+            isAdmin()
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(releaseId) && (isProjectOwner(projectId) || isAdmin());
+      }
+    }
+  }
+}

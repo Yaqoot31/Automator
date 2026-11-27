@@ -1,13 +1,11 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
-  getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
   signOut,
   type User as FirebaseUser,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { auth } from '@/lib/firebase';
 import type { AutomationProject } from '@/types';
 import {
   TEST_CASE_SHEET_HEADERS,
@@ -19,9 +17,6 @@ const REQUIRED_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.file',
 ];
-
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
 
 // Keep OAuth access token strictly in JS memory — never in localStorage or sessionStorage
 let cachedGoogleAccessToken: string | null = null;
